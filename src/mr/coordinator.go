@@ -21,22 +21,30 @@ type Coordinator struct {
 // Your code here -- RPC handlers for the worker to call.
 // AllocateTask allocates a task to worker
 func (c *Coordinator) AllocateTask(args *AllocateTaskArgs, reply *AllocateTaskReply) error {
-	if len(c.todoMapPool) > 0 { // allocate map
+	c.mu.Lock()
+	lenM := len(c.todoMapPool)
+	lenR := len(c.todoReducePool)
+	c.mu.Unlock()
+	if lenM > 0 { // allocate map
 		reply.TaskType = MapApplication
+		c.mu.Lock()
 		for k := range c.todoMapPool {
 			reply.TaskNo = k
 			reply.Filename = c.files[k]
 			break
 		}
+		c.mu.Unlock()
 		reply.NReduce = c.nReduce
 		reply.NumFiles = len(c.files)
 		return nil
-	} else if len(c.todoReducePool) > 0 { // allocate reduce
+	} else if lenR > 0 { // allocate reduce
 		reply.TaskType = ReduceApplication
+		c.mu.Lock()
 		for k := range c.todoReducePool {
 			reply.TaskNo = k
 			break
 		}
+		c.mu.Unlock()
 		reply.NReduce = c.nReduce
 		reply.NumFiles = len(c.files)
 		return nil

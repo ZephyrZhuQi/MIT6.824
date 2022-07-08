@@ -85,32 +85,26 @@ func WorkerMap(mapf func(string, string) []KeyValue, TaskNo int, filename string
 
 	// print the intermediate output to file: mr-0-0
 	// oname := "mr-0-0"
-	onames := []string{}
-	for outputId := 0; outputId < nReduce; outputId++ {
-		oname := "mr-" + strconv.Itoa(TaskNo) + "-" + strconv.Itoa(outputId)
-		ofile, _ := os.Create(oname)
-		onames = append(onames, oname)
-		ofile.Close()
-	}
+	// for outputId := 0; outputId < nReduce; outputId++ {
+	// 	oname := "mr-" + strconv.Itoa(TaskNo) + "-" + strconv.Itoa(outputId)
+	// 	ofile, _ := os.Create(oname)
+	// 	ofile.Close()
+	// }
 
 	outputs := make([][]KeyValue, nReduce)
 	for i := range outputs {
 		outputs[i] = make([]KeyValue, 0)
 	}
 	for i := 0; i < len(intermediate); i++ {
-		// fmt.Printf("intermediate[i].Key %v\n", intermediate[i].Key)
-		// fmt.Printf("ihash(intermediate[i].Key) %v\n", ihash(intermediate[i].Key))
-		// fmt.Printf("nReduce %v\n", nReduce)
 		outputId := ihash(intermediate[i].Key) % nReduce
 		outputs[outputId] = append(outputs[outputId], intermediate[i])
-		// fmt.Printf("%v\n", outputId)
-		// ofile, _ := os.OpenFile(oname, os.O_APPEND|os.O_WRONLY, 0644)
-		// fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, intermediate[i].Value)
 	}
-	// ofile.Close()
+
 	for outputId := 0; outputId < nReduce; outputId++ {
 		oname := "mr-" + strconv.Itoa(TaskNo) + "-" + strconv.Itoa(outputId)
-		ofile, _ := os.OpenFile(oname, os.O_APPEND|os.O_WRONLY, 0644)
+		// ofile, _ := os.OpenFile(oname, os.O_APPEND|os.O_WRONLY, 0644)
+		// os.O_APPEND leads to error!
+		ofile, _ := os.OpenFile(oname, os.O_CREATE|os.O_WRONLY, 0644)
 		enc := json.NewEncoder(ofile)
 		for _, kv := range outputs[outputId] {
 			tmp := map[string]string{kv.Key: kv.Value}
@@ -193,7 +187,7 @@ func CallAllocateTask() (bool, int, int, string, int, int) {
 	if !ret {
 		return false, reply.TaskType, reply.TaskNo, reply.Filename, reply.NReduce, reply.NumFiles
 	}
-	fmt.Printf("reply.Filename %v\n", reply.Filename)
+	// fmt.Printf("reply.Filename %v\n", reply.Filename)
 	return true, reply.TaskType, reply.TaskNo, reply.Filename, reply.NReduce, reply.NumFiles
 }
 
