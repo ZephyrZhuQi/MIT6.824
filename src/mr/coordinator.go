@@ -7,12 +7,25 @@ import (
 	"net/rpc"
 	"os"
 	"sync"
+	"time"
+)
+
+// in todoMapPool and todoReducePool, a task can be any of the three states
+// First assigned to Todo; when the task id is being processed, the state is Allocated
+// After it's done, the status is Finished (actually delete it from the map)
+const (
+	Todo      int = 0
+	Allocated int = 1
+	Finished  int = 2
 )
 
 type Coordinator struct {
 	// Your definitions here.
-	todoMapPool    map[int]bool // the map tasks needed to do
-	todoReducePool map[int]bool // the reduce tasks needed to do
+	// todoMapPool and todoReducePool are shared data, should be protected by mu
+	todoMapPool    map[int]int  // the map tasks needed to do
+	todoReducePool map[int]int  // the reduce tasks needed to do
+	todoMap        map[int]bool // the map tasks needed to do
+	todoReduce     map[int]bool // the reduce tasks needed to do
 	files          []string
 	nReduce        int
 	mu             sync.Mutex
@@ -22,31 +35,83 @@ type Coordinator struct {
 // AllocateTask allocates a task to worker
 func (c *Coordinator) AllocateTask(args *AllocateTaskArgs, reply *AllocateTaskReply) error {
 	c.mu.Lock()
-	lenM := len(c.todoMapPool)
-	lenR := len(c.todoReducePool)
+	lenM := len(c.todoMap)
+	lenR := len(c.todoReduce)
 	c.mu.Unlock()
+	// reduces can't start until the last map has finished
 	if lenM > 0 { // allocate map
 		reply.TaskType = MapApplication
-		c.mu.Lock()
+
+		found := false
 		for k := range c.todoMapPool {
-			reply.TaskNo = k
-			reply.Filename = c.files[k]
-			break
+			if c.todoMapPool[k] == Todo {
+				found = true
+				reply.TaskNo = k
+				reply.Filename = c.files[k]
+				c.mu.Lock()
+				c.todoMapPool[k] = Allocated
+				c.mu.Unlock()
+				break
+			}
 		}
-		c.mu.Unlock()
+
 		reply.NReduce = c.nReduce
 		reply.NumFiles = len(c.files)
+		if found {
+			var done sync.WaitGroup
+			go func() {
+				i := 0
+				done.Add(1)
+				c.mu.Lock()
+				for c.todoMapPool[reply.TaskNo] != Finished {
+					if i == 2 {
+						c.todoMapPool[reply.TaskNo] = Todo
+						done.Done()
+					}
+					time.Sleep(5 * time.Second)
+					i += 1
+				}
+				c.mu.Unlock()
+				done.Done()
+			}()
+			done.Wait()
+		}
+
 		return nil
 	} else if lenR > 0 { // allocate reduce
 		reply.TaskType = ReduceApplication
-		c.mu.Lock()
+		found := false
 		for k := range c.todoReducePool {
-			reply.TaskNo = k
-			break
+			if c.todoReducePool[k] == Todo {
+				found = true
+				reply.TaskNo = k
+				c.mu.Lock()
+				c.todoReducePool[k] = Allocated
+				c.mu.Unlock()
+				break
+			}
 		}
-		c.mu.Unlock()
 		reply.NReduce = c.nReduce
 		reply.NumFiles = len(c.files)
+		if found {
+			var done sync.WaitGroup
+			go func() {
+				i := 0
+				done.Add(1)
+				c.mu.Lock()
+				for c.todoReducePool[reply.TaskNo] != Finished {
+					if i == 2 {
+						c.todoReducePool[reply.TaskNo] = Todo
+						done.Done()
+					}
+					time.Sleep(5 * time.Second)
+					i += 1
+				}
+				c.mu.Unlock()
+				done.Done()
+			}()
+			done.Wait()
+		}
 		return nil
 	} else {
 		return nil
@@ -56,14 +121,18 @@ func (c *Coordinator) AllocateTask(args *AllocateTaskArgs, reply *AllocateTaskRe
 func (c *Coordinator) FinishTask(args *FinishTaskArgs, reply *FinishTaskReply) error {
 	finishTaskNo := args.TaskNo
 	finishTaskType := args.TaskType
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if finishTaskType == MapApplication {
-		c.mu.Lock()
-		delete(c.todoMapPool, finishTaskNo)
-		c.mu.Unlock()
+		// c.mu.Lock()
+		c.todoMapPool[finishTaskNo] = Finished
+		delete(c.todoMap, finishTaskNo)
+		// c.mu.Unlock()
 	} else if finishTaskType == ReduceApplication {
-		c.mu.Lock()
-		delete(c.todoReducePool, finishTaskNo)
-		c.mu.Unlock()
+		// c.mu.Lock()
+		c.todoReducePool[finishTaskNo] = Finished
+		delete(c.todoReduce, finishTaskNo)
+		// c.mu.Unlock()
 	}
 	return nil
 }
@@ -103,7 +172,7 @@ func (c *Coordinator) Done() bool {
 
 	// Your code here.
 	c.mu.Lock()
-	if len(c.todoMapPool) == 0 && len(c.todoReducePool) == 0 {
+	if len(c.todoMap) == 0 && len(c.todoReduce) == 0 {
 		ret = true
 	}
 	c.mu.Unlock()
@@ -120,13 +189,17 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
 	// Your code here.
-	c.todoMapPool = make(map[int]bool)
+	c.todoMapPool = make(map[int]int)
+	c.todoMap = make(map[int]bool)
 	for i := 0; i < len(files); i++ {
-		c.todoMapPool[i] = true
+		c.todoMapPool[i] = Todo
+		c.todoMap[i] = true
 	}
-	c.todoReducePool = make(map[int]bool)
+	c.todoReducePool = make(map[int]int)
+	c.todoReduce = make(map[int]bool)
 	for i := 0; i < nReduce; i++ {
-		c.todoReducePool[i] = true
+		c.todoReducePool[i] = Todo
+		c.todoReduce[i] = true
 	}
 	c.files = files
 	c.nReduce = nReduce

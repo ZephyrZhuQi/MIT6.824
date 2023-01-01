@@ -73,11 +73,11 @@ func WorkerMap(mapf func(string, string) []KeyValue, TaskNo int, filename string
 	intermediate := []KeyValue{}
 	file, err := os.Open(filename)
 	if err != nil {
-		log.Fatalf("cannot open %v", filename)
+		log.Fatalf("Mapper: cannot open %v", filename)
 	}
 	content, err := ioutil.ReadAll(file)
 	if err != nil {
-		log.Fatalf("cannot read %v", filename)
+		log.Fatalf("Mapper: cannot read %v", filename)
 	}
 	file.Close()
 	kva := mapf(filename, string(content))
@@ -104,7 +104,9 @@ func WorkerMap(mapf func(string, string) []KeyValue, TaskNo int, filename string
 		oname := "mr-" + strconv.Itoa(TaskNo) + "-" + strconv.Itoa(outputId)
 		// ofile, _ := os.OpenFile(oname, os.O_APPEND|os.O_WRONLY, 0644)
 		// os.O_APPEND leads to error!
-		ofile, _ := os.OpenFile(oname, os.O_CREATE|os.O_WRONLY, 0644)
+		// ofile, _ := os.OpenFile(oname, os.O_CREATE|os.O_WRONLY, 0644)
+		ofile, _ := os.CreateTemp("", oname+"_tmp")
+		defer os.Remove(ofile.Name()) // clean up
 		enc := json.NewEncoder(ofile)
 		for _, kv := range outputs[outputId] {
 			tmp := map[string]string{kv.Key: kv.Value}
@@ -114,6 +116,7 @@ func WorkerMap(mapf func(string, string) []KeyValue, TaskNo int, filename string
 				log.Fatalf("cannot encode %v", tmp)
 			}
 		}
+		os.Rename(ofile.Name(), oname)
 		ofile.Close()
 	}
 	ret := CallFinishTask(MapApplication, TaskNo)
@@ -130,7 +133,7 @@ func WorkerReduce(reducef func(string, []string) string, TaskNo int, numFiles in
 		oname := "mr-" + strconv.Itoa(i) + "-" + strconv.Itoa(TaskNo)
 		file, err := os.Open(oname)
 		if err != nil {
-			log.Fatalf("cannot open %v", oname)
+			log.Fatalf("Reducer: cannot open %v", oname)
 		}
 		dec := json.NewDecoder(file)
 
