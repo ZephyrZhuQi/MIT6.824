@@ -62,27 +62,17 @@ func (c *Coordinator) AllocateTask(args *AllocateTaskArgs, reply *AllocateTaskRe
 		reply.NumFiles = len(c.files)
 		if found {
 			go func() {
-				i := 0
-				for {
-					c.mu.RLock()
-					status := c.todoMapPool[reply.TaskNo]
-					c.mu.RUnlock()
-					if status != Finished {
-						if i == 2 {
-							c.mu.Lock()
-							c.todoMapPool[reply.TaskNo] = Todo
-							c.mu.Unlock()
-							break
-						}
-						time.Sleep(5 * time.Second)
-						i += 1
-					} else {
-						break
-					}
+				time.Sleep(10 * time.Second)
+				c.mu.RLock()
+				status := c.todoMapPool[reply.TaskNo]
+				c.mu.RUnlock()
+				if status != Finished {
+					c.mu.Lock()
+					c.todoMapPool[reply.TaskNo] = Todo
+					c.mu.Unlock()
 				}
 			}()
 		}
-
 		return nil
 	} else if lenR > 0 { // allocate reduce
 		reply.TaskType = ReduceApplication
@@ -104,23 +94,14 @@ func (c *Coordinator) AllocateTask(args *AllocateTaskArgs, reply *AllocateTaskRe
 		reply.NumFiles = len(c.files)
 		if found {
 			go func() {
-				i := 0
-				for {
-					c.mu.RLock()
-					status := c.todoReducePool[reply.TaskNo]
-					c.mu.RUnlock()
-					if status != Finished {
-						if i == 2 {
-							c.mu.Lock()
-							c.todoReducePool[reply.TaskNo] = Todo
-							c.mu.Unlock()
-							break
-						}
-						time.Sleep(5 * time.Second)
-						i += 1
-					} else {
-						break
-					}
+				time.Sleep(10 * time.Second)
+				c.mu.RLock()
+				status := c.todoReducePool[reply.TaskNo]
+				c.mu.RUnlock()
+				if status != Finished {
+					c.mu.Lock()
+					c.todoReducePool[reply.TaskNo] = Todo
+					c.mu.Unlock()
 				}
 			}()
 		}
