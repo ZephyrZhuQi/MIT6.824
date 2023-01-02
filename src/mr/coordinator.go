@@ -77,8 +77,11 @@ func (c *Coordinator) AllocateTask(args *AllocateTaskArgs, reply *AllocateTaskRe
 							done.Done()
 							break
 						}
-						time.Sleep(5 * time.Second)
+						time.Sleep(20 * time.Second)
 						i += 1
+					} else {
+						done.Done()
+						break
 					}
 				}
 			}()
@@ -121,8 +124,11 @@ func (c *Coordinator) AllocateTask(args *AllocateTaskArgs, reply *AllocateTaskRe
 							done.Done()
 							break
 						}
-						time.Sleep(5 * time.Second)
+						time.Sleep(20 * time.Second)
 						i += 1
+					} else {
+						done.Done()
+						break
 					}
 				}
 			}()
