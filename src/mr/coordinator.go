@@ -61,10 +61,8 @@ func (c *Coordinator) AllocateTask(args *AllocateTaskArgs, reply *AllocateTaskRe
 		reply.NReduce = c.nReduce
 		reply.NumFiles = len(c.files)
 		if found {
-			var done sync.WaitGroup
 			go func() {
 				i := 0
-				done.Add(1)
 				for {
 					c.mu.RLock()
 					status := c.todoMapPool[reply.TaskNo]
@@ -74,18 +72,15 @@ func (c *Coordinator) AllocateTask(args *AllocateTaskArgs, reply *AllocateTaskRe
 							c.mu.Lock()
 							c.todoMapPool[reply.TaskNo] = Todo
 							c.mu.Unlock()
-							done.Done()
 							break
 						}
-						time.Sleep(20 * time.Second)
+						time.Sleep(5 * time.Second)
 						i += 1
 					} else {
-						done.Done()
 						break
 					}
 				}
 			}()
-			done.Wait()
 		}
 
 		return nil
@@ -108,10 +103,8 @@ func (c *Coordinator) AllocateTask(args *AllocateTaskArgs, reply *AllocateTaskRe
 		reply.NReduce = c.nReduce
 		reply.NumFiles = len(c.files)
 		if found {
-			var done sync.WaitGroup
 			go func() {
 				i := 0
-				done.Add(1)
 				for {
 					c.mu.RLock()
 					status := c.todoReducePool[reply.TaskNo]
@@ -121,18 +114,15 @@ func (c *Coordinator) AllocateTask(args *AllocateTaskArgs, reply *AllocateTaskRe
 							c.mu.Lock()
 							c.todoReducePool[reply.TaskNo] = Todo
 							c.mu.Unlock()
-							done.Done()
 							break
 						}
-						time.Sleep(20 * time.Second)
+						time.Sleep(5 * time.Second)
 						i += 1
 					} else {
-						done.Done()
 						break
 					}
 				}
 			}()
-			done.Wait()
 		}
 		return nil
 	} else {
