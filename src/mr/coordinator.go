@@ -28,23 +28,26 @@ type Coordinator struct {
 	todoReduce     map[int]bool // the reduce tasks needed to do
 	files          []string
 	nReduce        int
-	mu             sync.Mutex
+	mu             sync.RWMutex
 }
 
 // Your code here -- RPC handlers for the worker to call.
 // AllocateTask allocates a task to worker
 func (c *Coordinator) AllocateTask(args *AllocateTaskArgs, reply *AllocateTaskReply) error {
-	c.mu.Lock()
+	c.mu.RLock()
 	lenM := len(c.todoMap)
 	lenR := len(c.todoReduce)
-	c.mu.Unlock()
+	c.mu.RUnlock()
 	// reduces can't start until the last map has finished
 	if lenM > 0 { // allocate map
 		reply.TaskType = MapApplication
 
 		found := false
-		for k := range c.todoMapPool {
-			if c.todoMapPool[k] == Todo {
+		for k := 0; k < len(c.files); k++ {
+			c.mu.RLock()
+			status := c.todoMapPool[k]
+			c.mu.RUnlock()
+			if status == Todo {
 				found = true
 				reply.TaskNo = k
 				reply.Filename = c.files[k]
@@ -62,17 +65,22 @@ func (c *Coordinator) AllocateTask(args *AllocateTaskArgs, reply *AllocateTaskRe
 			go func() {
 				i := 0
 				done.Add(1)
-				c.mu.Lock()
-				for c.todoMapPool[reply.TaskNo] != Finished {
-					if i == 2 {
-						c.todoMapPool[reply.TaskNo] = Todo
-						done.Done()
+				for {
+					c.mu.RLock()
+					status := c.todoMapPool[reply.TaskNo]
+					c.mu.RUnlock()
+					if status != Finished {
+						if i == 2 {
+							c.mu.Lock()
+							c.todoMapPool[reply.TaskNo] = Todo
+							c.mu.Unlock()
+							done.Done()
+							break
+						}
+						time.Sleep(5 * time.Second)
+						i += 1
 					}
-					time.Sleep(5 * time.Second)
-					i += 1
 				}
-				c.mu.Unlock()
-				done.Done()
 			}()
 			done.Wait()
 		}
@@ -81,8 +89,11 @@ func (c *Coordinator) AllocateTask(args *AllocateTaskArgs, reply *AllocateTaskRe
 	} else if lenR > 0 { // allocate reduce
 		reply.TaskType = ReduceApplication
 		found := false
-		for k := range c.todoReducePool {
-			if c.todoReducePool[k] == Todo {
+		for k := 0; k < c.nReduce; k++ {
+			c.mu.RLock()
+			status := c.todoReducePool[k]
+			c.mu.RUnlock()
+			if status == Todo {
 				found = true
 				reply.TaskNo = k
 				c.mu.Lock()
@@ -98,17 +109,22 @@ func (c *Coordinator) AllocateTask(args *AllocateTaskArgs, reply *AllocateTaskRe
 			go func() {
 				i := 0
 				done.Add(1)
-				c.mu.Lock()
-				for c.todoReducePool[reply.TaskNo] != Finished {
-					if i == 2 {
-						c.todoReducePool[reply.TaskNo] = Todo
-						done.Done()
+				for {
+					c.mu.RLock()
+					status := c.todoReducePool[reply.TaskNo]
+					c.mu.RUnlock()
+					if status != Finished {
+						if i == 2 {
+							c.mu.Lock()
+							c.todoReducePool[reply.TaskNo] = Todo
+							c.mu.Unlock()
+							done.Done()
+							break
+						}
+						time.Sleep(5 * time.Second)
+						i += 1
 					}
-					time.Sleep(5 * time.Second)
-					i += 1
 				}
-				c.mu.Unlock()
-				done.Done()
 			}()
 			done.Wait()
 		}
@@ -121,18 +137,16 @@ func (c *Coordinator) AllocateTask(args *AllocateTaskArgs, reply *AllocateTaskRe
 func (c *Coordinator) FinishTask(args *FinishTaskArgs, reply *FinishTaskReply) error {
 	finishTaskNo := args.TaskNo
 	finishTaskType := args.TaskType
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if finishTaskType == MapApplication {
-		// c.mu.Lock()
+		c.mu.Lock()
 		c.todoMapPool[finishTaskNo] = Finished
 		delete(c.todoMap, finishTaskNo)
-		// c.mu.Unlock()
+		c.mu.Unlock()
 	} else if finishTaskType == ReduceApplication {
-		// c.mu.Lock()
+		c.mu.Lock()
 		c.todoReducePool[finishTaskNo] = Finished
 		delete(c.todoReduce, finishTaskNo)
-		// c.mu.Unlock()
+		c.mu.Unlock()
 	}
 	return nil
 }
@@ -171,11 +185,11 @@ func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
-	c.mu.Lock()
+	c.mu.RLock()
 	if len(c.todoMap) == 0 && len(c.todoReduce) == 0 {
 		ret = true
 	}
-	c.mu.Unlock()
+	c.mu.RUnlock()
 
 	return ret
 }
