@@ -19,7 +19,7 @@ package raft
 
 import (
 	//	"bytes"
-	"fmt"
+
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -78,9 +78,9 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
-	role          int  // Follower, Candidate or Leader
-	Received      bool // received AppendEntries RPC from current leader
-	electionTimer *time.Timer
+	role            int // Follower, Candidate or Leader
+	electionTimer   *time.Timer
+	heartbeatTicker *time.Ticker
 
 	// persistent state (Updated on stable storage before responding to RPCs)
 	currentTerm int        // latest term server has seen (initialized to 0 on first boot, increases monotonically)
@@ -94,6 +94,10 @@ type Raft struct {
 	// volatile state on leaders (Reinitialized after election)
 	nextIndex  []int // for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
 	matchIndex []int // for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
+}
+
+func (rf *Raft) ResetElectionTimer() {
+	rf.electionTimer.Reset(time.Duration(rand.Intn(150)+300) * time.Millisecond)
 }
 
 // return currentTerm and whether this server
@@ -211,21 +215,17 @@ type AppendEntriesReply struct {
 // an AppendEntries RPC handler method that resets the election timeout so that
 // other servers don't step forward as leaders when one has already been elected.
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	// rf.elapsed_timer.Reset(0)
-	rf.Received = true
-	if rf.role == Leader && args.Term > rf.currentTerm {
-		rf.mu.Lock()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	reply.Term = rf.currentTerm
+	if args.Term >= rf.currentTerm {
 		rf.role = Follower
-		rf.mu.Unlock()
-		reply.Term = rf.currentTerm
 		reply.Success = true
-	} else if rf.role != Leader {
-		rf.mu.Lock()
-		reply.Term = rf.currentTerm
-		reply.Success = true
+		rf.ResetElectionTimer()
 		rf.currentTerm = args.Term
+	} else {
+		reply.Success = false
 		// fmt.Printf("server %d update currentTerm %d\n", rf.me, rf.currentTerm)
-		rf.mu.Unlock()
 	}
 }
 
@@ -239,40 +239,30 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	reply.Term = rf.currentTerm
+	reply.VoteGranted = false
+	if args.Term < rf.currentTerm {
+		return
+	}
 	if args.Term > rf.currentTerm {
-		fmt.Printf("new term starts: server %d has to vote again\n", rf.me)
+		// fmt.Printf("new term starts: server %d has to vote again\n", rf.me)
 		rf.role = Follower
-		rf.Received = false
 		rf.votedFor = -1
+		rf.currentTerm = args.Term
+		reply.Term = args.Term
+		reply.VoteGranted = true
 	}
-	if rf.role != Follower {
-		if args.Term > rf.currentTerm {
-			rf.currentTerm = args.Term
-			reply.Term = args.Term
+
+	// fmt.Printf("Inside Condition: IncomingTerm %d ServerTerm %d Server %d is %v VoteGranted is %v\n", args.Term, rf.currentTerm, rf.me, rf.role, reply.VoteGranted)
+	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
+		if len(rf.log) == 0 || args.LastLogTerm > rf.log[len(rf.log)-1].ReceivedTerm ||
+			args.LastLogTerm == rf.log[len(rf.log)-1].ReceivedTerm && args.LastLogIndex >= len(rf.log) {
+			rf.votedFor = args.CandidateId
 			reply.VoteGranted = true
-			rf.mu.Lock()
-			rf.role = Follower
-			rf.mu.Unlock()
-		}
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = false
-	} else {
-		rf.Received = true
-		// fmt.Printf("Inside Condition: IncomingTerm %d ServerTerm %d Server %d is %v VoteGranted is %v\n", args.Term, rf.currentTerm, rf.me, rf.role, reply.VoteGranted)
-		if args.Term < rf.currentTerm {
-			reply.Term = rf.currentTerm
-			reply.VoteGranted = false
-		} else if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
-			if len(rf.log) == 0 || args.LastLogTerm > rf.log[len(rf.log)-1].ReceivedTerm ||
-				args.LastLogTerm == rf.log[len(rf.log)-1].ReceivedTerm && args.LastLogIndex >= len(rf.log) {
-				rf.votedFor = args.CandidateId
-				reply.Term = args.Term
-				reply.VoteGranted = true
-				rf.currentTerm = args.Term
-			}
 		}
 	}
-	fmt.Printf("IncomingTerm %d ServerTerm %d Server %d is %v VoteGranted is %v Candidate is %d\n", args.Term, rf.currentTerm, rf.me, rf.role, reply.VoteGranted, args.CandidateId)
+
+	// fmt.Printf("IncomingTerm %d ServerTerm %d Server %d is %v VoteGranted is %v Candidate is %d\n", args.Term, rf.currentTerm, rf.me, rf.role, reply.VoteGranted, args.CandidateId)
 }
 
 //
@@ -354,6 +344,19 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+func (rf *Raft) BroadcastAppendEntries() {
+	for i := 0; i < len(rf.peers); i++ {
+		if i != rf.me {
+			go func(i int) {
+				args := AppendEntriesArgs{}
+				args.Term = rf.currentTerm
+				reply := AppendEntriesReply{}
+				rf.sendAppendEntries(i, &args, &reply)
+			}(i)
+		}
+	}
+}
+
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
 func (rf *Raft) ticker() {
@@ -365,9 +368,14 @@ func (rf *Raft) ticker() {
 		select {
 		case <-rf.electionTimer.C:
 			rf.mu.Lock()
+			rf.ResetElectionTimer()
+			if rf.role == Leader { // Do not start election on leader
+				rf.mu.Unlock()
+				break
+			}
 			rf.role = Candidate
 			rf.currentTerm += 1
-			fmt.Printf("Raft server %d is candidate, current term %d\n", rf.me, rf.currentTerm)
+			// fmt.Printf("Raft server %d is candidate, current term %d\n", rf.me, rf.currentTerm)
 			rf.mu.Unlock()
 			// for rf.killed() == false && rf.role == Candidate {
 			// create a background goroutine that will kick off leader election periodically
@@ -375,71 +383,58 @@ func (rf *Raft) ticker() {
 
 			rf.votedFor = rf.me
 			numVotes := 1
-			rf.elapsed_timer.Reset(0)
 			// issues RequestVote RPCs in parallel to each of the other servers in the cluster.
-			var wg sync.WaitGroup
-			wg.Add(len(rf.peers) - 1)
-			for i := 0; i < len(rf.peers); i++ {
-				if i != rf.me {
-					go func(i int) {
-						args := RequestVoteArgs{}
-						args.Term = rf.currentTerm
-						args.CandidateId = rf.me
-						lastLogIndex := len(rf.log)
-						if lastLogIndex == 0 {
-							lastLogIndex = -1
-						}
-						args.LastLogIndex = lastLogIndex
-						lastLogTerm := -1
-						if lastLogIndex != -1 {
-							lastLogTerm = rf.log[lastLogIndex-1].ReceivedTerm
-						}
-						args.LastLogTerm = lastLogTerm
-						reply := RequestVoteReply{}
-						fmt.Printf("Raft server %d sending out RequestVote\n", rf.me)
-						ok := rf.sendRequestVote(i, &args, &reply)
-						wg.Done()
-						if ok && reply.VoteGranted {
-							rf.mu.Lock()
-							numVotes += 1
-							rf.mu.Unlock()
-						}
-					}(i)
-				}
-			}
-			wg.Wait()
-			fmt.Printf("Term %d Total of %d servers\n", rf.currentTerm, len(rf.peers))
-			fmt.Printf("Term %d Raft server %d has %d numVotes\n", rf.currentTerm, rf.me, numVotes)
-			if numVotes >= len(rf.peers)/2+1 {
-				rf.mu.Lock()
-				rf.role = Leader
-				rf.mu.Unlock()
-				fmt.Printf("Server %d is leader now!", rf.me)
-				time.Sleep(time.Second)
-				for rf.killed() == false && rf.role == Leader {
-					for i := 0; i < len(rf.peers); i++ {
-						if i != rf.me {
-							go func(i int) {
-								args := AppendEntriesArgs{}
-								args.Term = rf.currentTerm
-								reply := AppendEntriesReply{}
-								rf.sendAppendEntries(i, &args, &reply)
-							}(i)
-						}
+
+			for rf.killed() == false && rf.role == Candidate {
+				var wg sync.WaitGroup
+				wg.Add(len(rf.peers) - 1)
+				for i := 0; i < len(rf.peers); i++ {
+					if i != rf.me {
+						go func(i int) {
+							args := RequestVoteArgs{}
+							args.Term = rf.currentTerm
+							args.CandidateId = rf.me
+							lastLogIndex := len(rf.log)
+							if lastLogIndex == 0 {
+								lastLogIndex = -1
+							}
+							args.LastLogIndex = lastLogIndex
+							lastLogTerm := -1
+							if lastLogIndex != -1 {
+								lastLogTerm = rf.log[lastLogIndex-1].ReceivedTerm
+							}
+							args.LastLogTerm = lastLogTerm
+							reply := RequestVoteReply{}
+							// fmt.Printf("Raft server %d sending out RequestVote\n", rf.me)
+							ok := rf.sendRequestVote(i, &args, &reply)
+							if ok && reply.VoteGranted {
+								rf.mu.Lock()
+								numVotes += 1
+								rf.mu.Unlock()
+							}
+							wg.Done()
+						}(i)
 					}
 				}
-			}
-			for rf.killed() == false {
-				duration := time.Duration(rand.Intn(5)) * time.Second
-				time.Sleep(duration)
-				rf.Received = false
-				time.Sleep(time.Second)
-				if rf.Received != true {
-					rf.role = Follower
-					rf.votedFor = -1
-					fmt.Printf("Raft server %d is %v\n", rf.me, rf.role)
-					break
+				wg.Wait()
+				// (a) wins the election
+				// fmt.Printf("Term %d Total of %d servers\n", rf.currentTerm, len(rf.peers))
+				// fmt.Printf("Term %d Raft server %d has %d numVotes\n", rf.currentTerm, rf.me, numVotes)
+				if numVotes >= len(rf.peers)/2+1 {
+					rf.mu.Lock()
+					rf.role = Leader
+					rf.mu.Unlock()
+					// fmt.Printf("Server %d is leader now!", rf.me)
+					rf.ResetElectionTimer()
+					rf.BroadcastAppendEntries()
 				}
+			}
+		case <-rf.heartbeatTicker.C:
+			rf.mu.Lock()
+			state := rf.role
+			rf.mu.Unlock()
+			if state == Leader {
+				rf.BroadcastAppendEntries()
 			}
 		}
 	}
@@ -467,15 +462,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.role = Follower
 	rf.currentTerm = 0
-	rf.votedFor = -1    // hasn't granted vote to candidate
-	rf.Received = false // hasn't received RequestVote RPC
+	rf.votedFor = -1 // hasn't granted vote to candidate
 
 	// Your initialization code here (2A, 2B, 2C).
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	rf.electionTimer = time.NewTimer(time.Second)
+	rf.electionTimer = time.NewTimer(time.Duration(rand.Intn(150)+300) * time.Millisecond)
+	rf.heartbeatTicker = time.NewTicker(time.Duration(300) * time.Millisecond)
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
