@@ -244,8 +244,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.Term < rf.currentTerm {
 		return
 	}
-	if args.Term > rf.currentTerm {
-		// fmt.Printf("new term starts: server %d has to vote again\n", rf.me)
+	if args.Term >= rf.currentTerm {
 		rf.role = Follower
 		rf.votedFor = -1
 		rf.currentTerm = args.Term
@@ -253,7 +252,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = true
 	}
 
-	// fmt.Printf("Inside Condition: IncomingTerm %d ServerTerm %d Server %d is %v VoteGranted is %v\n", args.Term, rf.currentTerm, rf.me, rf.role, reply.VoteGranted)
 	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
 		if len(rf.log) == 0 || args.LastLogTerm > rf.log[len(rf.log)-1].ReceivedTerm ||
 			args.LastLogTerm == rf.log[len(rf.log)-1].ReceivedTerm && args.LastLogIndex >= len(rf.log) {
@@ -377,17 +375,15 @@ func (rf *Raft) ticker() {
 			rf.currentTerm += 1
 			// fmt.Printf("Raft server %d is candidate, current term %d\n", rf.me, rf.currentTerm)
 			rf.mu.Unlock()
-			// for rf.killed() == false && rf.role == Candidate {
 			// create a background goroutine that will kick off leader election periodically
 			// by sending out RequestVote RPCs when it hasn't heard back from another peer for a while
 
 			rf.votedFor = rf.me
 			numVotes := 1
+			voteReceived := 1
+			voteResultChan := make(chan bool)
 			// issues RequestVote RPCs in parallel to each of the other servers in the cluster.
-
 			for rf.killed() == false && rf.role == Candidate {
-				var wg sync.WaitGroup
-				wg.Add(len(rf.peers) - 1)
 				for i := 0; i < len(rf.peers); i++ {
 					if i != rf.me {
 						go func(i int) {
@@ -407,24 +403,45 @@ func (rf *Raft) ticker() {
 							reply := RequestVoteReply{}
 							// fmt.Printf("Raft server %d sending out RequestVote\n", rf.me)
 							ok := rf.sendRequestVote(i, &args, &reply)
-							if ok && reply.VoteGranted {
-								rf.mu.Lock()
-								numVotes += 1
-								rf.mu.Unlock()
+							if ok {
+								voteResultChan <- reply.VoteGranted
+							} else {
+								voteResultChan <- false
 							}
-							wg.Done()
 						}(i)
 					}
 				}
-				wg.Wait()
+				for {
+					result := <-voteResultChan
+					voteReceived++
+					if result {
+						numVotes++
+					}
+					if numVotes > len(rf.peers)/2 {
+						break
+					}
+					if voteReceived >= len(rf.peers) {
+						break
+					}
+				}
+				// wg.Wait()
 				// (a) wins the election
 				// fmt.Printf("Term %d Total of %d servers\n", rf.currentTerm, len(rf.peers))
 				// fmt.Printf("Term %d Raft server %d has %d numVotes\n", rf.currentTerm, rf.me, numVotes)
+
+				// if state changed during election, ignore the couting
+				rf.mu.Lock()
+				if rf.role != Candidate {
+					DPrintf("Server %v is no longer candidate", rf.me)
+					rf.mu.Unlock()
+					return
+				}
+				rf.mu.Unlock()
 				if numVotes >= len(rf.peers)/2+1 {
 					rf.mu.Lock()
 					rf.role = Leader
 					rf.mu.Unlock()
-					// fmt.Printf("Server %d is leader now!", rf.me)
+					// fmt.Printf("Server %d is leader now!\n", rf.me)
 					rf.ResetElectionTimer()
 					rf.BroadcastAppendEntries()
 				}
@@ -453,7 +470,7 @@ func (rf *Raft) ticker() {
 //
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
-	rand.Seed(42)
+	rand.Seed(time.Now().UnixNano())
 
 	rf := &Raft{}
 	rf.peers = peers
@@ -470,7 +487,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	rf.electionTimer = time.NewTimer(time.Duration(rand.Intn(150)+300) * time.Millisecond)
-	rf.heartbeatTicker = time.NewTicker(time.Duration(300) * time.Millisecond)
+	rf.heartbeatTicker = time.NewTicker(time.Duration(150) * time.Millisecond)
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
