@@ -345,15 +345,14 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) BroadcastAppendEntries() {
-	// rf.mu.Lock()
-	// args := AppendEntriesArgs{}
-	// args.Term = rf.currentTerm
-	// rf.mu.Unlock()
+	rf.mu.Lock()
+	args := AppendEntriesArgs{
+		Term: rf.currentTerm,
+	}
+	rf.mu.Unlock()
 	for i := 0; i < len(rf.peers); i++ {
 		if i != rf.me {
 			go func(i int) {
-				args := AppendEntriesArgs{}
-				args.Term = rf.currentTerm
 				reply := AppendEntriesReply{}
 				rf.sendAppendEntries(i, &args, &reply)
 			}(i)
