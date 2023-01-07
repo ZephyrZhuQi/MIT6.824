@@ -239,6 +239,8 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
 	if args.Term < rf.currentTerm {
@@ -343,6 +345,10 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) BroadcastAppendEntries() {
+	// rf.mu.Lock()
+	// args := AppendEntriesArgs{}
+	// args.Term = rf.currentTerm
+	// rf.mu.Unlock()
 	for i := 0; i < len(rf.peers); i++ {
 		if i != rf.me {
 			go func(i int) {
@@ -373,33 +379,33 @@ func (rf *Raft) ticker() {
 			}
 			rf.role = Candidate
 			rf.currentTerm += 1
-			// fmt.Printf("Raft server %d is candidate, current term %d\n", rf.me, rf.currentTerm)
-			rf.mu.Unlock()
-			// create a background goroutine that will kick off leader election periodically
-			// by sending out RequestVote RPCs when it hasn't heard back from another peer for a while
-
 			rf.votedFor = rf.me
 			numVotes := 1
 			voteReceived := 1
 			voteResultChan := make(chan bool)
+
+			args := RequestVoteArgs{}
+			args.Term = rf.currentTerm
+			args.CandidateId = rf.me
+			lastLogIndex := len(rf.log)
+			if lastLogIndex == 0 {
+				lastLogIndex = -1
+			}
+			args.LastLogIndex = lastLogIndex
+			lastLogTerm := -1
+			if lastLogIndex != -1 {
+				lastLogTerm = rf.log[lastLogIndex-1].ReceivedTerm
+			}
+			args.LastLogTerm = lastLogTerm
+			// fmt.Printf("Raft server %d is candidate, current term %d\n", rf.me, rf.currentTerm)
+			rf.mu.Unlock()
+			// create a background goroutine that will kick off leader election periodically
+			// by sending out RequestVote RPCs when it hasn't heard back from another peer for a while
 			// issues RequestVote RPCs in parallel to each of the other servers in the cluster.
 			for rf.killed() == false && rf.role == Candidate {
 				for i := 0; i < len(rf.peers); i++ {
 					if i != rf.me {
 						go func(i int) {
-							args := RequestVoteArgs{}
-							args.Term = rf.currentTerm
-							args.CandidateId = rf.me
-							lastLogIndex := len(rf.log)
-							if lastLogIndex == 0 {
-								lastLogIndex = -1
-							}
-							args.LastLogIndex = lastLogIndex
-							lastLogTerm := -1
-							if lastLogIndex != -1 {
-								lastLogTerm = rf.log[lastLogIndex-1].ReceivedTerm
-							}
-							args.LastLogTerm = lastLogTerm
 							reply := RequestVoteReply{}
 							// fmt.Printf("Raft server %d sending out RequestVote\n", rf.me)
 							ok := rf.sendRequestVote(i, &args, &reply)
@@ -440,9 +446,9 @@ func (rf *Raft) ticker() {
 				if numVotes >= len(rf.peers)/2+1 {
 					rf.mu.Lock()
 					rf.role = Leader
+					rf.ResetElectionTimer()
 					rf.mu.Unlock()
 					// fmt.Printf("Server %d is leader now!\n", rf.me)
-					rf.ResetElectionTimer()
 					rf.BroadcastAppendEntries()
 				}
 			}
