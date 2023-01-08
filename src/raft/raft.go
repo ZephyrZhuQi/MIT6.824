@@ -218,14 +218,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
-	if args.Term >= rf.currentTerm {
+	if args.Term < rf.currentTerm {
+		reply.Success = false
+		// fmt.Printf("server %d update currentTerm %d\n", rf.me, rf.currentTerm)
+	} else {
 		rf.role = Follower
 		reply.Success = true
 		rf.ResetElectionTimer()
 		rf.currentTerm = args.Term
-	} else {
-		reply.Success = false
-		// fmt.Printf("server %d update currentTerm %d\n", rf.me, rf.currentTerm)
 	}
 }
 
@@ -316,9 +316,18 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
-	isLeader := true
+	isLeader := false
 
 	// Your code here (2B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	term = rf.currentTerm
+	if rf.role == Leader {
+		rf.log = append(rf.log, LogEntry{command, term})
+		index = len(rf.log)
+		rf.nextIndex[rf.me] = index + 1
+		rf.matchIndex[rf.me] = index
+	}
 
 	return index, term, isLeader
 }
@@ -485,6 +494,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.role = Follower
 	rf.currentTerm = 0
 	rf.votedFor = -1 // hasn't granted vote to candidate
+	rf.nextIndex = make([]int, len(rf.peers))
+	rf.matchIndex = make([]int, len(rf.peers))
 
 	// Your initialization code here (2A, 2B, 2C).
 
