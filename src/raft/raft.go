@@ -20,7 +20,6 @@ package raft
 import (
 	//	"bytes"
 
-	"fmt"
 	"math"
 	"math/rand"
 	"sync"
@@ -221,7 +220,7 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	fmt.Printf("AppendEntries to server %d leadercommit %d rf.commitindex %d\n", rf.me, args.LeaderCommit, rf.commitIndex)
+	// fmt.Printf("AppendEntries to server %d leadercommit %d rf.commitindex %d\n", rf.me, args.LeaderCommit, rf.commitIndex)
 	reply.Term = rf.currentTerm
 	if args.Term < rf.currentTerm {
 		reply.Success = false
@@ -233,10 +232,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if args.LeaderCommit > rf.commitIndex {
 			lastNewEntryIndex := len(rf.log) - 1
 			rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(lastNewEntryIndex)))
-			fmt.Printf("Updating server %d commitIndex to %d from leader\n", rf.me, rf.commitIndex)
+			// fmt.Printf("Updating server %d commitIndex to %d from leader\n", rf.me, rf.commitIndex)
 			applyMsg := ApplyMsg{
 				CommandValid: true,
-				Command:      rf.log[rf.commitIndex],
+				Command:      rf.log[rf.commitIndex].Command,
 				CommandIndex: rf.commitIndex,
 			}
 			rf.applyCh <- applyMsg
@@ -347,7 +346,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	fmt.Printf("Entering Start function\n")
+	// fmt.Printf("Entering Start function\n")
 	index := -1
 	term := -1
 	isLeader := false
@@ -396,11 +395,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 							if reply.Success == true {
 								rf.nextIndex[i] = index + 1
 								rf.matchIndex[i] = index
-								fmt.Printf("Raft server %d sending out AppendEntries to peer %d succeeds rf.nextIndex[i] %d\n", rf.me, i, rf.nextIndex[i])
+								// fmt.Printf("Raft server %d sending out AppendEntries to peer %d succeeds rf.nextIndex[i] %d\n", rf.me, i, rf.nextIndex[i])
 								break
 							} else { // If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
 								rf.nextIndex[i]--
-								fmt.Printf("Raft server %d sending out AppendEntries to peer %d fails rf.nextIndex[i] %d\n", rf.me, i, rf.nextIndex[i])
+								// fmt.Printf("Raft server %d sending out AppendEntries to peer %d fails rf.nextIndex[i] %d\n", rf.me, i, rf.nextIndex[i])
 							}
 						} else {
 							appendResultChan <- false
@@ -426,7 +425,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		}
 		rf.applyCh <- applyMsg
 	}
-	fmt.Printf("server %d Start function return index %d term %d isLeader %v\n", rf.me, index, term, isLeader)
+	// fmt.Printf("server %d Start function return index %d term %d isLeader %v\n", rf.me, index, term, isLeader)
 	return index, term, isLeader
 }
 

@@ -444,7 +444,6 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
 
 		cfg.mu.Lock()
 		cmd1, ok := cfg.logs[i][index]
-		fmt.Printf("cfg.logs[i][index:%d] cmd1 %v ok %v\n", index, cmd1, ok)
 		cfg.mu.Unlock()
 
 		if ok {
@@ -531,7 +530,6 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			t1 := time.Now()
 			for time.Since(t1).Seconds() < 2 {
 				nd, cmd1 := cfg.nCommitted(index)
-				fmt.Printf("cfg.nCommitted(index %d) nd %d, cmd1 %v\v", index, nd, cmd1)
 				if nd > 0 && nd >= expectedServers {
 					// committed
 					if cmd1 == cmd {
