@@ -20,6 +20,8 @@ package raft
 import (
 	//	"bytes"
 
+	"fmt"
+	"math"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -94,6 +96,8 @@ type Raft struct {
 	// volatile state on leaders (Reinitialized after election)
 	nextIndex  []int // for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
 	matchIndex []int // for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
+
+	applyCh chan ApplyMsg
 }
 
 func (rf *Raft) ResetElectionTimer() {
@@ -217,15 +221,44 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	fmt.Printf("AppendEntries to server %d leadercommit %d rf.commitindex %d\n", rf.me, args.LeaderCommit, rf.commitIndex)
 	reply.Term = rf.currentTerm
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		// fmt.Printf("server %d update currentTerm %d\n", rf.me, rf.currentTerm)
 	} else {
 		rf.role = Follower
-		reply.Success = true
 		rf.ResetElectionTimer()
 		rf.currentTerm = args.Term
+		if args.LeaderCommit > rf.commitIndex {
+			lastNewEntryIndex := len(rf.log) - 1
+			rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(lastNewEntryIndex)))
+			fmt.Printf("Updating server %d commitIndex to %d from leader\n", rf.me, rf.commitIndex)
+			applyMsg := ApplyMsg{
+				CommandValid: true,
+				Command:      rf.log[rf.commitIndex],
+				CommandIndex: rf.commitIndex,
+			}
+			rf.applyCh <- applyMsg
+		}
+		if args.PrevLogIndex < 0 {
+			reply.Success = true
+			return
+		} else if len(rf.log) < args.PrevLogIndex+1 || rf.log[args.PrevLogIndex].ReceivedTerm != args.PrevLogTerm {
+			reply.Success = false
+			return
+		}
+		//If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (§5.3)
+		// if {
+
+		// }
+		{
+			rf.log = append(rf.log, args.Entries...)
+			reply.Success = true
+			// If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+
+		}
+
 	}
 }
 
@@ -314,21 +347,86 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	fmt.Printf("Entering Start function\n")
 	index := -1
 	term := -1
 	isLeader := false
 
 	// Your code here (2B).
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	isLeader = (rf.role == Leader)
 	term = rf.currentTerm
-	if rf.role == Leader {
+	rf.mu.Unlock()
+	if isLeader {
 		rf.log = append(rf.log, LogEntry{command, term})
-		index = len(rf.log)
-		rf.nextIndex[rf.me] = index + 1
+		index = len(rf.log) - 1
+		for i := 0; i < len(rf.peers); i++ {
+			rf.nextIndex[i] = index
+			rf.matchIndex[i] = 0
+		}
 		rf.matchIndex[rf.me] = index
+		// index := len(rf.log) - 1
+		appendResultChan := make(chan bool)
+		numAppends := 1
+		for i := 0; i < len(rf.peers); i++ {
+			if i != rf.me {
+				// If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
+				go func(i int) {
+					for index >= rf.nextIndex[i] {
+						rf.mu.Lock()
+						prevLogIndex := index - 1
+						prevLogTerm := -1
+						if prevLogIndex != -1 {
+							prevLogTerm = rf.log[index-1].ReceivedTerm
+						}
+						args := AppendEntriesArgs{
+							Term:         rf.currentTerm,
+							LeaderId:     rf.me,
+							PrevLogIndex: prevLogIndex,
+							PrevLogTerm:  prevLogTerm,
+							Entries:      rf.log[rf.nextIndex[i]:],
+							LeaderCommit: rf.commitIndex,
+						}
+						rf.mu.Unlock()
+						reply := AppendEntriesReply{}
+						ok := rf.sendAppendEntries(i, &args, &reply)
+						if ok {
+							appendResultChan <- reply.Success
+							// If successful: update nextIndex and matchIndex for follower (§5.3)
+							if reply.Success == true {
+								rf.nextIndex[i] = index + 1
+								rf.matchIndex[i] = index
+								fmt.Printf("Raft server %d sending out AppendEntries to peer %d succeeds rf.nextIndex[i] %d\n", rf.me, i, rf.nextIndex[i])
+								break
+							} else { // If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
+								rf.nextIndex[i]--
+								fmt.Printf("Raft server %d sending out AppendEntries to peer %d fails rf.nextIndex[i] %d\n", rf.me, i, rf.nextIndex[i])
+							}
+						} else {
+							appendResultChan <- false
+						}
+					}
+				}(i)
+			}
+		}
+		for {
+			result := <-appendResultChan
+			if result {
+				numAppends++
+			}
+			if numAppends > len(rf.peers)/2 {
+				break
+			}
+		}
+		rf.commitIndex = index
+		applyMsg := ApplyMsg{
+			CommandValid: true,
+			Command:      command,
+			CommandIndex: index,
+		}
+		rf.applyCh <- applyMsg
 	}
-
+	fmt.Printf("server %d Start function return index %d term %d isLeader %v\n", rf.me, index, term, isLeader)
 	return index, term, isLeader
 }
 
@@ -356,7 +454,8 @@ func (rf *Raft) killed() bool {
 func (rf *Raft) BroadcastAppendEntries() {
 	rf.mu.Lock()
 	args := AppendEntriesArgs{
-		Term: rf.currentTerm,
+		Term:         rf.currentTerm,
+		LeaderCommit: rf.commitIndex,
 	}
 	rf.mu.Unlock()
 	for i := 0; i < len(rf.peers); i++ {
@@ -395,14 +494,11 @@ func (rf *Raft) ticker() {
 			args := RequestVoteArgs{}
 			args.Term = rf.currentTerm
 			args.CandidateId = rf.me
-			lastLogIndex := len(rf.log)
-			if lastLogIndex == 0 {
-				lastLogIndex = -1
-			}
+			lastLogIndex := len(rf.log) - 1
 			args.LastLogIndex = lastLogIndex
 			lastLogTerm := -1
 			if lastLogIndex != -1 {
-				lastLogTerm = rf.log[lastLogIndex-1].ReceivedTerm
+				lastLogTerm = rf.log[lastLogIndex].ReceivedTerm
 			}
 			args.LastLogTerm = lastLogTerm
 			// fmt.Printf("Raft server %d is candidate, current term %d\n", rf.me, rf.currentTerm)
@@ -494,6 +590,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.role = Follower
 	rf.currentTerm = 0
 	rf.votedFor = -1 // hasn't granted vote to candidate
+	// Raft logs are 1-indexed; add a dummy entry in the first slot to enforce this
+	dummyEntry := LogEntry{
+		Command:      0,
+		ReceivedTerm: -1,
+	}
+	rf.log = append(rf.log, dummyEntry)
+	rf.commitIndex = 0
+	rf.applyCh = applyCh
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
 
