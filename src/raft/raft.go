@@ -207,6 +207,7 @@ type AppendEntriesArgs struct {
 	Entries      []LogEntry // log entries to store (empty for heartbeat;
 	//may send more than one for efficiency)
 	LeaderCommit int // leader’s commitIndex
+	IsHeartbeat  bool
 }
 
 type AppendEntriesReply struct {
@@ -245,17 +246,32 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			return
 		} else if len(rf.log) < args.PrevLogIndex+1 || rf.log[args.PrevLogIndex].ReceivedTerm != args.PrevLogTerm {
 			reply.Success = false
+			// fmt.Printf("responding len(rf.log) %d args.PrevLogIndex %d rf.log[args.PrevLogIndex].ReceivedTerm %d args.PrevLogTerm %d\n", len(rf.log), args.PrevLogIndex, rf.log[args.PrevLogIndex].ReceivedTerm, args.PrevLogTerm)
+			// fmt.Printf("server %d is responding to AppendEntries fail here\n", rf.me)
 			return
 		}
 		//If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (§5.3)
 		// if {
 
 		// }
-		{
+		if !args.IsHeartbeat {
+			// fmt.Printf("Before: server %d len(rf.log) %d\n", rf.me, len(rf.log))
 			rf.log = append(rf.log, args.Entries...)
+			// fmt.Printf("After: server %d len(rf.log) %d\n", rf.me, len(rf.log))
 			reply.Success = true
 			// If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
-
+			// if args.LeaderCommit > rf.commitIndex {
+			// 	lastNewEntryIndex := len(rf.log) - 1
+			// 	rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(lastNewEntryIndex)))
+			// 	fmt.Printf("Updating server %d commitIndex to %d from leader\n", rf.me, rf.commitIndex)
+			// 	fmt.Printf("command %v\n", rf.log[rf.commitIndex].Command)
+			// 	applyMsg := ApplyMsg{
+			// 		CommandValid: true,
+			// 		Command:      rf.log[rf.commitIndex].Command,
+			// 		CommandIndex: rf.commitIndex,
+			// 	}
+			// 	rf.applyCh <- applyMsg
+			// }
 		}
 
 	}
@@ -283,12 +299,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.votedFor = -1
 		rf.currentTerm = args.Term
 		reply.Term = args.Term
-		reply.VoteGranted = true
 	}
-
+	// fmt.Printf("Ser %d rf.votedFor %d len(rf.log) %d args.LastLogTerm %d rf.log[len(rf.log)-1].ReceivedTerm %d args.LastLogIndex %d\n", rf.me, rf.votedFor, len(rf.log), args.LastLogTerm, rf.log[len(rf.log)-1].ReceivedTerm, args.LastLogIndex)
 	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
-		if len(rf.log) == 0 || args.LastLogTerm > rf.log[len(rf.log)-1].ReceivedTerm ||
-			args.LastLogTerm == rf.log[len(rf.log)-1].ReceivedTerm && args.LastLogIndex >= len(rf.log) {
+		if args.LastLogTerm > rf.log[len(rf.log)-1].ReceivedTerm ||
+			args.LastLogTerm == rf.log[len(rf.log)-1].ReceivedTerm && args.LastLogIndex >= len(rf.log)-1 {
 			rf.votedFor = args.CandidateId
 			reply.VoteGranted = true
 		}
@@ -367,6 +382,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		// index := len(rf.log) - 1
 		appendResultChan := make(chan bool)
 		numAppends := 1
+		appendReceived := 0
 		for i := 0; i < len(rf.peers); i++ {
 			if i != rf.me {
 				// If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
@@ -385,6 +401,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 							PrevLogTerm:  prevLogTerm,
 							Entries:      rf.log[rf.nextIndex[i]:],
 							LeaderCommit: rf.commitIndex,
+							IsHeartbeat:  false,
 						}
 						rf.mu.Unlock()
 						reply := AppendEntriesReply{}
@@ -395,11 +412,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 							if reply.Success == true {
 								rf.nextIndex[i] = index + 1
 								rf.matchIndex[i] = index
-								// fmt.Printf("Raft server %d sending out AppendEntries to peer %d succeeds rf.nextIndex[i] %d\n", rf.me, i, rf.nextIndex[i])
+								// fmt.Printf("index %d Raft server %d sending out AppendEntries to peer %d succeeds rf.nextIndex[i] %d\n", index, rf.me, i, rf.nextIndex[i])
 								break
 							} else { // If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
 								rf.nextIndex[i]--
-								// fmt.Printf("Raft server %d sending out AppendEntries to peer %d fails rf.nextIndex[i] %d\n", rf.me, i, rf.nextIndex[i])
+								// fmt.Printf("index %d Raft server %d sending out AppendEntries to peer %d fails rf.nextIndex[i] %d\n", index, rf.me, i, rf.nextIndex[i])
 							}
 						} else {
 							appendResultChan <- false
@@ -408,22 +425,31 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 				}(i)
 			}
 		}
+		gatheredConsensus := false
 		for {
 			result := <-appendResultChan
+			appendReceived++
 			if result {
 				numAppends++
 			}
 			if numAppends > len(rf.peers)/2 {
+				gatheredConsensus = true
+				break
+			}
+			if appendReceived >= len(rf.peers) {
 				break
 			}
 		}
-		rf.commitIndex = index
-		applyMsg := ApplyMsg{
-			CommandValid: true,
-			Command:      command,
-			CommandIndex: index,
+		if gatheredConsensus {
+			rf.commitIndex = index
+			applyMsg := ApplyMsg{
+				CommandValid: true,
+				Command:      command,
+				CommandIndex: index,
+			}
+			rf.applyCh <- applyMsg
 		}
-		rf.applyCh <- applyMsg
+
 	}
 	// fmt.Printf("server %d Start function return index %d term %d isLeader %v\n", rf.me, index, term, isLeader)
 	return index, term, isLeader
@@ -451,13 +477,23 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) BroadcastAppendEntries() {
-	rf.mu.Lock()
-	args := AppendEntriesArgs{
-		Term:         rf.currentTerm,
-		LeaderCommit: rf.commitIndex,
-	}
-	rf.mu.Unlock()
 	for i := 0; i < len(rf.peers); i++ {
+		rf.mu.Lock()
+		prevLogIndex := rf.commitIndex - 1
+		prevLogTerm := -1
+		if prevLogIndex != -1 {
+			prevLogTerm = rf.log[rf.commitIndex-1].ReceivedTerm
+		}
+		args := AppendEntriesArgs{
+			Term:         rf.currentTerm,
+			LeaderId:     rf.me,
+			PrevLogIndex: prevLogIndex,
+			PrevLogTerm:  prevLogTerm,
+			Entries:      rf.log[rf.nextIndex[i]:],
+			LeaderCommit: rf.commitIndex,
+			IsHeartbeat:  true,
+		}
+		rf.mu.Unlock()
 		if i != rf.me {
 			go func(i int) {
 				reply := AppendEntriesReply{}
