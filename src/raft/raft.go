@@ -207,7 +207,6 @@ type AppendEntriesArgs struct {
 	Entries      []LogEntry // log entries to store (empty for heartbeat;
 	//may send more than one for efficiency)
 	LeaderCommit int // leader’s commitIndex
-	IsHeartbeat  bool
 }
 
 type AppendEntriesReply struct {
@@ -254,7 +253,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// if {
 
 		// }
-		if !args.IsHeartbeat {
+		{
 			// fmt.Printf("Before: server %d len(rf.log) %d\n", rf.me, len(rf.log))
 			rf.log = append(rf.log, args.Entries...)
 			// fmt.Printf("After: server %d len(rf.log) %d\n", rf.me, len(rf.log))
@@ -379,77 +378,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			rf.matchIndex[i] = 0
 		}
 		rf.matchIndex[rf.me] = index
-		// index := len(rf.log) - 1
-		appendResultChan := make(chan bool)
-		numAppends := 1
-		appendReceived := 0
-		for i := 0; i < len(rf.peers); i++ {
-			if i != rf.me {
-				// If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
-				go func(i int) {
-					for index >= rf.nextIndex[i] {
-						rf.mu.Lock()
-						prevLogIndex := index - 1
-						prevLogTerm := -1
-						if prevLogIndex != -1 {
-							prevLogTerm = rf.log[index-1].ReceivedTerm
-						}
-						args := AppendEntriesArgs{
-							Term:         rf.currentTerm,
-							LeaderId:     rf.me,
-							PrevLogIndex: prevLogIndex,
-							PrevLogTerm:  prevLogTerm,
-							Entries:      rf.log[rf.nextIndex[i]:],
-							LeaderCommit: rf.commitIndex,
-							IsHeartbeat:  false,
-						}
-						rf.mu.Unlock()
-						reply := AppendEntriesReply{}
-						ok := rf.sendAppendEntries(i, &args, &reply)
-						if ok {
-							appendResultChan <- reply.Success
-							// If successful: update nextIndex and matchIndex for follower (§5.3)
-							if reply.Success == true {
-								rf.nextIndex[i] = index + 1
-								rf.matchIndex[i] = index
-								// fmt.Printf("index %d Raft server %d sending out AppendEntries to peer %d succeeds rf.nextIndex[i] %d\n", index, rf.me, i, rf.nextIndex[i])
-								break
-							} else { // If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
-								rf.nextIndex[i]--
-								// fmt.Printf("index %d Raft server %d sending out AppendEntries to peer %d fails rf.nextIndex[i] %d\n", index, rf.me, i, rf.nextIndex[i])
-							}
-						} else {
-							appendResultChan <- false
-						}
-					}
-				}(i)
-			}
-		}
-		gatheredConsensus := false
-		for {
-			result := <-appendResultChan
-			appendReceived++
-			if result {
-				numAppends++
-			}
-			if numAppends > len(rf.peers)/2 {
-				gatheredConsensus = true
-				break
-			}
-			if appendReceived >= len(rf.peers) {
-				break
-			}
-		}
-		if gatheredConsensus {
-			rf.commitIndex = index
-			applyMsg := ApplyMsg{
-				CommandValid: true,
-				Command:      command,
-				CommandIndex: index,
-			}
-			rf.applyCh <- applyMsg
-		}
-
+		rf.BroadcastAppendEntries()
 	}
 	// fmt.Printf("server %d Start function return index %d term %d isLeader %v\n", rf.me, index, term, isLeader)
 	return index, term, isLeader
@@ -477,29 +406,74 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) BroadcastAppendEntries() {
+	appendResultChan := make(chan bool)
+	numAppends := 1
+	appendReceived := 0
+	lastLogIndex := len(rf.log) - 1
 	for i := 0; i < len(rf.peers); i++ {
-		rf.mu.Lock()
-		prevLogIndex := rf.commitIndex - 1
-		prevLogTerm := -1
-		if prevLogIndex != -1 {
-			prevLogTerm = rf.log[rf.commitIndex-1].ReceivedTerm
-		}
-		args := AppendEntriesArgs{
-			Term:         rf.currentTerm,
-			LeaderId:     rf.me,
-			PrevLogIndex: prevLogIndex,
-			PrevLogTerm:  prevLogTerm,
-			Entries:      rf.log[rf.nextIndex[i]:],
-			LeaderCommit: rf.commitIndex,
-			IsHeartbeat:  true,
-		}
-		rf.mu.Unlock()
 		if i != rf.me {
+			// If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
 			go func(i int) {
-				reply := AppendEntriesReply{}
-				rf.sendAppendEntries(i, &args, &reply)
+				for lastLogIndex >= rf.nextIndex[i] {
+					rf.mu.Lock()
+					prevLogIndex := lastLogIndex - 1
+					prevLogTerm := -1
+					if prevLogIndex != -1 {
+						prevLogTerm = rf.log[lastLogIndex-1].ReceivedTerm
+					}
+					args := AppendEntriesArgs{
+						Term:         rf.currentTerm,
+						LeaderId:     rf.me,
+						PrevLogIndex: prevLogIndex,
+						PrevLogTerm:  prevLogTerm,
+						Entries:      rf.log[rf.nextIndex[i]:],
+						LeaderCommit: rf.commitIndex,
+					}
+					rf.mu.Unlock()
+					reply := AppendEntriesReply{}
+					ok := rf.sendAppendEntries(i, &args, &reply)
+					if ok {
+						appendResultChan <- reply.Success
+						// If successful: update nextIndex and matchIndex for follower (§5.3)
+						if reply.Success == true {
+							rf.nextIndex[i] = lastLogIndex + 1
+							rf.matchIndex[i] = lastLogIndex
+							// fmt.Printf("index %d Raft server %d sending out AppendEntries to peer %d succeeds rf.nextIndex[i] %d\n", index, rf.me, i, rf.nextIndex[i])
+							break
+						} else { // If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
+							rf.nextIndex[i]--
+							// fmt.Printf("index %d Raft server %d sending out AppendEntries to peer %d fails rf.nextIndex[i] %d\n", index, rf.me, i, rf.nextIndex[i])
+						}
+					} else {
+						appendResultChan <- false
+					}
+				}
 			}(i)
 		}
+	}
+	gatheredConsensus := false
+	for {
+		result := <-appendResultChan
+		appendReceived++
+		if result {
+			numAppends++
+		}
+		if numAppends > len(rf.peers)/2 {
+			gatheredConsensus = true
+			break
+		}
+		if appendReceived >= len(rf.peers) {
+			break
+		}
+	}
+	if gatheredConsensus {
+		rf.commitIndex = lastLogIndex
+		applyMsg := ApplyMsg{
+			CommandValid: true,
+			Command:      rf.log[lastLogIndex].Command,
+			CommandIndex: lastLogIndex,
+		}
+		rf.applyCh <- applyMsg
 	}
 }
 
