@@ -20,6 +20,7 @@ package raft
 import (
 	//	"bytes"
 
+	"fmt"
 	"math"
 	"math/rand"
 	"sync"
@@ -229,17 +230,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.role = Follower
 		rf.ResetElectionTimer()
 		rf.currentTerm = args.Term
-		if args.LeaderCommit > rf.commitIndex {
-			lastNewEntryIndex := len(rf.log) - 1
-			rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(lastNewEntryIndex)))
-			// fmt.Printf("Updating server %d commitIndex to %d from leader\n", rf.me, rf.commitIndex)
-			applyMsg := ApplyMsg{
-				CommandValid: true,
-				Command:      rf.log[rf.commitIndex].Command,
-				CommandIndex: rf.commitIndex,
-			}
-			rf.applyCh <- applyMsg
-		}
 		if args.PrevLogIndex < 0 {
 			reply.Success = true
 			return
@@ -249,7 +239,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			// fmt.Printf("server %d is responding to AppendEntries fail here\n", rf.me)
 			return
 		}
-		//If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (§5.3)
+		// TODO: If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (§5.3)
 		// if {
 
 		// }
@@ -259,18 +249,18 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			// fmt.Printf("After: server %d len(rf.log) %d\n", rf.me, len(rf.log))
 			reply.Success = true
 			// If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
-			// if args.LeaderCommit > rf.commitIndex {
-			// 	lastNewEntryIndex := len(rf.log) - 1
-			// 	rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(lastNewEntryIndex)))
-			// 	fmt.Printf("Updating server %d commitIndex to %d from leader\n", rf.me, rf.commitIndex)
-			// 	fmt.Printf("command %v\n", rf.log[rf.commitIndex].Command)
-			// 	applyMsg := ApplyMsg{
-			// 		CommandValid: true,
-			// 		Command:      rf.log[rf.commitIndex].Command,
-			// 		CommandIndex: rf.commitIndex,
-			// 	}
-			// 	rf.applyCh <- applyMsg
-			// }
+			if args.LeaderCommit > rf.commitIndex {
+				lastNewEntryIndex := len(rf.log) - 1
+				rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(lastNewEntryIndex)))
+				fmt.Printf("Updating server %d commitIndex to %d from leader\n", rf.me, rf.commitIndex)
+				fmt.Printf("command %v\n", rf.log[rf.commitIndex].Command)
+				applyMsg := ApplyMsg{
+					CommandValid: true,
+					Command:      rf.log[rf.commitIndex].Command,
+					CommandIndex: rf.commitIndex,
+				}
+				rf.applyCh <- applyMsg
+			}
 		}
 
 	}
@@ -293,7 +283,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.Term < rf.currentTerm {
 		return
 	}
-	if args.Term >= rf.currentTerm {
+	if args.Term > rf.currentTerm {
 		rf.role = Follower
 		rf.votedFor = -1
 		rf.currentTerm = args.Term
@@ -305,6 +295,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			args.LastLogTerm == rf.log[len(rf.log)-1].ReceivedTerm && args.LastLogIndex >= len(rf.log)-1 {
 			rf.votedFor = args.CandidateId
 			reply.VoteGranted = true
+			rf.ResetElectionTimer()
 		}
 	}
 
@@ -500,16 +491,17 @@ func (rf *Raft) ticker() {
 			voteReceived := 1
 			voteResultChan := make(chan bool)
 
-			args := RequestVoteArgs{}
-			args.Term = rf.currentTerm
-			args.CandidateId = rf.me
 			lastLogIndex := len(rf.log) - 1
-			args.LastLogIndex = lastLogIndex
 			lastLogTerm := -1
 			if lastLogIndex != -1 {
 				lastLogTerm = rf.log[lastLogIndex].ReceivedTerm
 			}
-			args.LastLogTerm = lastLogTerm
+			args := RequestVoteArgs{
+				Term:         rf.currentTerm,
+				CandidateId:  rf.me,
+				LastLogIndex: lastLogIndex,
+				LastLogTerm:  lastLogTerm,
+			}
 			// fmt.Printf("Raft server %d is candidate, current term %d\n", rf.me, rf.currentTerm)
 			rf.mu.Unlock()
 			// create a background goroutine that will kick off leader election periodically
