@@ -21,7 +21,6 @@ import (
 	//	"bytes"
 
 	"fmt"
-	"math"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -30,6 +29,22 @@ import (
 	//	"6.824/labgob"
 	"6.824/labrpc"
 )
+
+func max(a int, b int) int {
+	if a >= b {
+		return a
+	} else {
+		return b
+	}
+}
+
+func min(a int, b int) int {
+	if a <= b {
+		return a
+	} else {
+		return b
+	}
+}
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -251,7 +266,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			// If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 			if args.LeaderCommit > rf.commitIndex {
 				lastNewEntryIndex := len(rf.log) - 1
-				rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(lastNewEntryIndex)))
+				rf.commitIndex = min(args.LeaderCommit, lastNewEntryIndex)
 				fmt.Printf("Updating server %d commitIndex to %d from leader\n", rf.me, rf.commitIndex)
 				fmt.Printf("command %v\n", rf.log[rf.commitIndex].Command)
 				applyMsg := ApplyMsg{
@@ -421,20 +436,21 @@ func (rf *Raft) BroadcastAppendEntries() {
 				args.Entries = rf.log[rf.nextIndex[i]:]
 				reply := AppendEntriesReply{}
 				// go func(i int) {
-				rf.sendAppendEntries(i, &args, &reply)
+				ok := rf.sendAppendEntries(i, &args, &reply)
+				// If successful: update nextIndex and matchIndex for follower (§5.3)
+				if ok {
+					if reply.Success == true {
+						rf.nextIndex[i] = lastLogIndex + 1
+						rf.matchIndex[i] = lastLogIndex
+						// fmt.Printf("leader %d appendReceived++ success\n", rf.me)
+						// fmt.Printf("index %d Raft server %d sending out AppendEntries to peer %d succeeds rf.nextIndex[i] %d\n", index, rf.me, i, rf.nextIndex[i])
+					} else { // If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
+						rf.nextIndex[i] = max(1, rf.nextIndex[i]-1)
+						// fmt.Printf("leader %d appendReceived++ fail\n", rf.me)
+						// fmt.Printf("index %d Raft server %d sending out AppendEntries to peer %d fails rf.nextIndex[i] %d\n", index, rf.me, i, rf.nextIndex[i])
+					}
+				}
 			}(i)
-
-			// If successful: update nextIndex and matchIndex for follower (§5.3)
-			// if reply.Success == true {
-			// 	rf.nextIndex[i] = lastLogIndex + 1
-			// 	rf.matchIndex[i] = lastLogIndex
-			// 	// fmt.Printf("leader %d appendReceived++ success\n", rf.me)
-			// 	// fmt.Printf("index %d Raft server %d sending out AppendEntries to peer %d succeeds rf.nextIndex[i] %d\n", index, rf.me, i, rf.nextIndex[i])
-			// } else { // If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
-			// 	rf.nextIndex[i]--
-			// 	// fmt.Printf("leader %d appendReceived++ fail\n", rf.me)
-			// 	// fmt.Printf("index %d Raft server %d sending out AppendEntries to peer %d fails rf.nextIndex[i] %d\n", index, rf.me, i, rf.nextIndex[i])
-			// }
 
 		}
 	}
