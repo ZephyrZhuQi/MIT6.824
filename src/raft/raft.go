@@ -397,67 +397,48 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) BroadcastAppendEntries() {
-	appendResultChan := make(chan bool)
-	numAppends := 1
-	appendReceived := 0
+
+	rf.mu.Lock()
 	lastLogIndex := len(rf.log) - 1
+	prevLogIndex := lastLogIndex - 1
+	prevLogTerm := -1
+	if prevLogIndex != -1 {
+		prevLogTerm = rf.log[lastLogIndex-1].ReceivedTerm
+	}
+	args := AppendEntriesArgs{
+		Term:         rf.currentTerm,
+		LeaderId:     rf.me,
+		PrevLogIndex: prevLogIndex,
+		PrevLogTerm:  prevLogTerm,
+		// Entries:      rf.log[rf.nextIndex[i]:],
+		LeaderCommit: rf.commitIndex,
+	}
+	rf.mu.Unlock()
 	for i := 0; i < len(rf.peers); i++ {
 		if i != rf.me {
 			// If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
 			go func(i int) {
-				for lastLogIndex >= rf.nextIndex[i] {
-					rf.mu.Lock()
-					prevLogIndex := lastLogIndex - 1
-					prevLogTerm := -1
-					if prevLogIndex != -1 {
-						prevLogTerm = rf.log[lastLogIndex-1].ReceivedTerm
-					}
-					args := AppendEntriesArgs{
-						Term:         rf.currentTerm,
-						LeaderId:     rf.me,
-						PrevLogIndex: prevLogIndex,
-						PrevLogTerm:  prevLogTerm,
-						Entries:      rf.log[rf.nextIndex[i]:],
-						LeaderCommit: rf.commitIndex,
-					}
-					rf.mu.Unlock()
-					reply := AppendEntriesReply{}
-					ok := rf.sendAppendEntries(i, &args, &reply)
-					if ok {
-						appendResultChan <- reply.Success
-						// If successful: update nextIndex and matchIndex for follower (§5.3)
-						if reply.Success == true {
-							rf.nextIndex[i] = lastLogIndex + 1
-							rf.matchIndex[i] = lastLogIndex
-							// fmt.Printf("index %d Raft server %d sending out AppendEntries to peer %d succeeds rf.nextIndex[i] %d\n", index, rf.me, i, rf.nextIndex[i])
-							break
-						} else { // If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
-							rf.nextIndex[i]--
-							// fmt.Printf("index %d Raft server %d sending out AppendEntries to peer %d fails rf.nextIndex[i] %d\n", index, rf.me, i, rf.nextIndex[i])
-						}
-					} else {
-						appendResultChan <- false
-					}
-				}
+				args.Entries = rf.log[rf.nextIndex[i]:]
+				reply := AppendEntriesReply{}
+				// go func(i int) {
+				rf.sendAppendEntries(i, &args, &reply)
 			}(i)
+
+			// If successful: update nextIndex and matchIndex for follower (§5.3)
+			// if reply.Success == true {
+			// 	rf.nextIndex[i] = lastLogIndex + 1
+			// 	rf.matchIndex[i] = lastLogIndex
+			// 	// fmt.Printf("leader %d appendReceived++ success\n", rf.me)
+			// 	// fmt.Printf("index %d Raft server %d sending out AppendEntries to peer %d succeeds rf.nextIndex[i] %d\n", index, rf.me, i, rf.nextIndex[i])
+			// } else { // If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
+			// 	rf.nextIndex[i]--
+			// 	// fmt.Printf("leader %d appendReceived++ fail\n", rf.me)
+			// 	// fmt.Printf("index %d Raft server %d sending out AppendEntries to peer %d fails rf.nextIndex[i] %d\n", index, rf.me, i, rf.nextIndex[i])
+			// }
+
 		}
 	}
-	gatheredConsensus := false
-	for {
-		result := <-appendResultChan
-		appendReceived++
-		if result {
-			numAppends++
-		}
-		if numAppends > len(rf.peers)/2 {
-			gatheredConsensus = true
-			break
-		}
-		if appendReceived >= len(rf.peers) {
-			break
-		}
-	}
-	if gatheredConsensus {
+	if false {
 		rf.commitIndex = lastLogIndex
 		applyMsg := ApplyMsg{
 			CommandValid: true,
@@ -507,7 +488,7 @@ func (rf *Raft) ticker() {
 			// create a background goroutine that will kick off leader election periodically
 			// by sending out RequestVote RPCs when it hasn't heard back from another peer for a while
 			// issues RequestVote RPCs in parallel to each of the other servers in the cluster.
-			for rf.killed() == false && rf.role == Candidate {
+			if rf.killed() == false && rf.role == Candidate {
 				for i := 0; i < len(rf.peers); i++ {
 					if i != rf.me {
 						go func(i int) {
