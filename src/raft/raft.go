@@ -20,7 +20,6 @@ package raft
 import (
 	//	"bytes"
 
-	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -240,6 +239,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Term = rf.currentTerm
 	if args.Term < rf.currentTerm {
 		reply.Success = false
+		return
 		// fmt.Printf("server %d update currentTerm %d\n", rf.me, rf.currentTerm)
 	} else {
 		rf.role = Follower
@@ -254,27 +254,33 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			// fmt.Printf("server %d is responding to AppendEntries fail here\n", rf.me)
 			return
 		}
-		// TODO: If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (§5.3)
-		// if {
-
-		// }
-		{
+		// If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (§5.3)
+		for idx, entry := range args.Entries {
+			currentIdx := args.PrevLogIndex + idx + 1
+			if currentIdx < len(rf.log) && rf.log[currentIdx] != entry {
+				rf.log = rf.log[:currentIdx]
+			}
 			// fmt.Printf("Before: server %d len(rf.log) %d\n", rf.me, len(rf.log))
-			rf.log = append(rf.log, args.Entries...)
+			rf.log = append(rf.log, entry)
 			// fmt.Printf("After: server %d len(rf.log) %d\n", rf.me, len(rf.log))
+		}
+		{
 			reply.Success = true
 			// If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 			if args.LeaderCommit > rf.commitIndex {
 				lastNewEntryIndex := len(rf.log) - 1
 				rf.commitIndex = min(args.LeaderCommit, lastNewEntryIndex)
-				fmt.Printf("Updating server %d commitIndex to %d from leader\n", rf.me, rf.commitIndex)
-				fmt.Printf("command %v\n", rf.log[rf.commitIndex].Command)
-				applyMsg := ApplyMsg{
-					CommandValid: true,
-					Command:      rf.log[rf.commitIndex].Command,
-					CommandIndex: rf.commitIndex,
+				// fmt.Printf("Updating server %d commitIndex to %d from leader\n", rf.me, rf.commitIndex)
+				// fmt.Printf("command %v\n", rf.log[rf.commitIndex].Command)
+				for rf.commitIndex > rf.lastApplied {
+					rf.lastApplied++
+					applyMsg := ApplyMsg{
+						CommandValid: true,
+						Command:      rf.log[rf.lastApplied].Command,
+						CommandIndex: rf.lastApplied,
+					}
+					rf.applyCh <- applyMsg
 				}
-				rf.applyCh <- applyMsg
 			}
 		}
 
@@ -454,12 +460,31 @@ func (rf *Raft) BroadcastAppendEntries() {
 
 		}
 	}
-	if false {
-		rf.commitIndex = lastLogIndex
+	// If there exists an N such that N > commitIndex, a majority
+	// of matchIndex[i] ≥ N, and log[N].term == currentTerm:
+	// set commitIndex = N (§5.3, §5.4).
+	for N := lastLogIndex; N > rf.commitIndex; N-- {
+		numLogs := 1
+		if rf.log[N].ReceivedTerm == rf.currentTerm {
+			for j := 0; j < len(rf.peers); j++ {
+				if j != rf.me {
+					if rf.matchIndex[j] >= N {
+						numLogs++
+					}
+				}
+
+			}
+			if numLogs > len(rf.peers)/2 {
+				rf.commitIndex = N
+			}
+		}
+	}
+	for rf.commitIndex > rf.lastApplied {
+		rf.lastApplied++
 		applyMsg := ApplyMsg{
 			CommandValid: true,
-			Command:      rf.log[lastLogIndex].Command,
-			CommandIndex: lastLogIndex,
+			Command:      rf.log[rf.lastApplied].Command,
+			CommandIndex: rf.lastApplied,
 		}
 		rf.applyCh <- applyMsg
 	}
@@ -595,6 +620,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	}
 	rf.log = append(rf.log, dummyEntry)
 	rf.commitIndex = 0
+	rf.lastApplied = 0
 	rf.applyCh = applyCh
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
