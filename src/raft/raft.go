@@ -422,28 +422,24 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) BroadcastAppendEntries() {
 
-	rf.mu.Lock()
 	lastLogIndex := len(rf.log) - 1
-	args := AppendEntriesArgs{
-		Term:     rf.currentTerm,
-		LeaderId: rf.me,
-		// PrevLogIndex: prevLogIndex,
-		// PrevLogTerm: prevLogTerm,
-		// Entries:      rf.log[rf.nextIndex[i]:],
-		LeaderCommit: rf.commitIndex,
-	}
-	rf.mu.Unlock()
 	for i := 0; i < len(rf.peers); i++ {
 		if i != rf.me {
 			// If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
 			go func(i int) {
+				args := AppendEntriesArgs{}
+				args.Term = rf.currentTerm
+				args.LeaderId = rf.me
 				args.PrevLogIndex = rf.nextIndex[i] - 1
 				if args.PrevLogIndex <= -1 {
 					args.PrevLogTerm = -1
 				} else {
 					args.PrevLogTerm = rf.log[rf.nextIndex[i]-1].ReceivedTerm
 				}
-				args.Entries = rf.log[rf.nextIndex[i]:]
+				entries := rf.log[rf.nextIndex[i]:]
+				args.Entries = make([]LogEntry, len(entries))
+				copy(args.Entries, entries)
+				args.LeaderCommit = rf.commitIndex
 				reply := AppendEntriesReply{}
 				// go func(i int) {
 				ok := rf.sendAppendEntries(i, &args, &reply)
