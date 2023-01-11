@@ -225,7 +225,8 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term    int  // currentTerm, for leader to update itself
+	Term    int // currentTerm, for leader to update itself
+	Append  bool
 	Success bool //true if follower contained entry matching
 	//prevLogIndex and prevLogTerm
 }
@@ -238,7 +239,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// fmt.Printf("AppendEntries to server %d leadercommit %d rf.commitindex %d\n", rf.me, args.LeaderCommit, rf.commitIndex)
 	reply.Term = rf.currentTerm
 	if args.Term < rf.currentTerm {
-		reply.Success = false
+		reply.Append = false
 		return
 		// fmt.Printf("server %d update currentTerm %d\n", rf.me, rf.currentTerm)
 	} else {
@@ -246,14 +247,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.ResetElectionTimer()
 		rf.currentTerm = args.Term
 		if args.PrevLogIndex < 0 {
-			reply.Success = true
+			reply.Append = false
 			return
 		} else if len(rf.log) < args.PrevLogIndex+1 || rf.log[args.PrevLogIndex].ReceivedTerm != args.PrevLogTerm {
+			reply.Append = true
 			reply.Success = false
 			// fmt.Printf("responding len(rf.log) %d args.PrevLogIndex %d rf.log[args.PrevLogIndex].ReceivedTerm %d args.PrevLogTerm %d\n", len(rf.log), args.PrevLogIndex, rf.log[args.PrevLogIndex].ReceivedTerm, args.PrevLogTerm)
 			// fmt.Printf("server %d is responding to AppendEntries fail here\n", rf.me)
 			return
 		}
+		reply.Append = true
 		// If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (§5.3)
 		for idx, entry := range args.Entries {
 			currentIdx := args.PrevLogIndex + idx + 1
@@ -421,16 +424,11 @@ func (rf *Raft) BroadcastAppendEntries() {
 
 	rf.mu.Lock()
 	lastLogIndex := len(rf.log) - 1
-	prevLogIndex := lastLogIndex - 1
-	prevLogTerm := -1
-	if prevLogIndex != -1 {
-		prevLogTerm = rf.log[lastLogIndex-1].ReceivedTerm
-	}
 	args := AppendEntriesArgs{
-		Term:         rf.currentTerm,
-		LeaderId:     rf.me,
-		PrevLogIndex: prevLogIndex,
-		PrevLogTerm:  prevLogTerm,
+		Term:     rf.currentTerm,
+		LeaderId: rf.me,
+		// PrevLogIndex: prevLogIndex,
+		// PrevLogTerm: prevLogTerm,
 		// Entries:      rf.log[rf.nextIndex[i]:],
 		LeaderCommit: rf.commitIndex,
 	}
@@ -439,22 +437,31 @@ func (rf *Raft) BroadcastAppendEntries() {
 		if i != rf.me {
 			// If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
 			go func(i int) {
+				args.PrevLogIndex = rf.nextIndex[i] - 1
+				if args.PrevLogIndex <= -1 {
+					args.PrevLogTerm = -1
+				} else {
+					args.PrevLogTerm = rf.log[rf.nextIndex[i]-1].ReceivedTerm
+				}
 				args.Entries = rf.log[rf.nextIndex[i]:]
 				reply := AppendEntriesReply{}
 				// go func(i int) {
 				ok := rf.sendAppendEntries(i, &args, &reply)
 				// If successful: update nextIndex and matchIndex for follower (§5.3)
 				if ok {
-					if reply.Success == true {
-						rf.nextIndex[i] = lastLogIndex + 1
-						rf.matchIndex[i] = lastLogIndex
-						// fmt.Printf("leader %d appendReceived++ success\n", rf.me)
-						// fmt.Printf("index %d Raft server %d sending out AppendEntries to peer %d succeeds rf.nextIndex[i] %d\n", index, rf.me, i, rf.nextIndex[i])
-					} else { // If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
-						rf.nextIndex[i] = max(1, rf.nextIndex[i]-1)
-						// fmt.Printf("leader %d appendReceived++ fail\n", rf.me)
-						// fmt.Printf("index %d Raft server %d sending out AppendEntries to peer %d fails rf.nextIndex[i] %d\n", index, rf.me, i, rf.nextIndex[i])
+					if reply.Append {
+						if reply.Success == true {
+							rf.nextIndex[i] = lastLogIndex + 1
+							rf.matchIndex[i] = lastLogIndex
+							// fmt.Printf("leader %d appendReceived++ success\n", rf.me)
+							// fmt.Printf("index %d Raft server %d sending out AppendEntries to peer %d succeeds rf.nextIndex[i] %d\n", index, rf.me, i, rf.nextIndex[i])
+						} else { // If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
+							rf.nextIndex[i] = max(1, rf.nextIndex[i]-1)
+							// fmt.Printf("leader %d appendReceived++ fail\n", rf.me)
+							// fmt.Printf("index %d Raft server %d sending out AppendEntries to peer %d fails rf.nextIndex[i] %d\n", index, rf.me, i, rf.nextIndex[i])
+						}
 					}
+
 				}
 			}(i)
 
