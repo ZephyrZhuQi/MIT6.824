@@ -20,12 +20,15 @@ package raft
 import (
 	//	"bytes"
 
+	"bytes"
+	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	//	"6.824/labgob"
+	"6.824/labgob"
 	"6.824/labrpc"
 )
 
@@ -140,12 +143,13 @@ func (rf *Raft) GetState() (int, bool) {
 func (rf *Raft) persist() {
 	// Your code here (2C).
 	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -157,17 +161,20 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 	// Your code here (2C).
 	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var log []LogEntry
+	if d.Decode(&currentTerm) != nil ||
+		d.Decode(&votedFor) != nil ||
+		d.Decode(&log) != nil {
+		fmt.Printf("readPersist Decode error")
+	} else {
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor
+		rf.log = log
+	}
 }
 
 //
@@ -269,6 +276,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.log = append(rf.log, entry)
 			// fmt.Printf("After: server %d len(rf.log) %d\n", rf.me, len(rf.log))
 		}
+		rf.persist()
 		{
 			reply.Success = true
 			// If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
@@ -325,6 +333,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.currentTerm = args.Term
 		}
 	}
+	rf.persist()
 
 	// fmt.Printf("IncomingTerm %d ServerTerm %d Server %d is %v VoteGranted is %v Candidate is %d\n", args.Term, rf.currentTerm, rf.me, rf.role, reply.VoteGranted, args.CandidateId)
 }
@@ -396,6 +405,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			rf.matchIndex[i] = 0
 		}
 		rf.matchIndex[rf.me] = index
+		rf.persist()
 		rf.BroadcastAppendEntries()
 	}
 	// fmt.Printf("server %d Start function return index %d term %d isLeader %v\n", rf.me, index, term, isLeader)
@@ -557,6 +567,7 @@ func (rf *Raft) ticker() {
 							rf.role = Follower
 							rf.votedFor = -1
 							rf.currentTerm = reply.Term
+							rf.persist()
 							return
 						}
 					}
@@ -595,6 +606,7 @@ func (rf *Raft) ticker() {
 					// fmt.Printf("Server %d is leader now!\n", rf.me)
 					rf.BroadcastAppendEntries()
 				}
+				rf.persist()
 			}
 		case <-rf.heartbeatTicker.C:
 			rf.mu.Lock()
