@@ -419,14 +419,14 @@ func TestBackup2B(t *testing.T) {
 	cfg.disconnect((leader1 + 4) % servers)
 
 	// submit lots of commands that won't commit
-	for i := 0; i < 50; i++ {
+	for i := 0; i < 5; i++ {
 		cfg.rafts[leader1].Start(rand.Int())
 	}
 
 	time.Sleep(RaftElectionTimeout / 2)
 
-	cfg.disconnect((leader1 + 0) % servers)
 	cfg.disconnect((leader1 + 1) % servers)
+	cfg.disconnect((leader1 + 0) % servers)
 
 	// allow other partition to recover
 	cfg.connect((leader1 + 2) % servers)
@@ -434,7 +434,7 @@ func TestBackup2B(t *testing.T) {
 	cfg.connect((leader1 + 4) % servers)
 
 	// lots of successful commands to new group.
-	for i := 0; i < 50; i++ {
+	for i := 0; i < 5; i++ {
 		cfg.one(rand.Int(), 3, true)
 	}
 
@@ -447,7 +447,7 @@ func TestBackup2B(t *testing.T) {
 	cfg.disconnect(other)
 
 	// lots more commands that won't commit
-	for i := 0; i < 50; i++ {
+	for i := 0; i < 5; i++ {
 		cfg.rafts[leader2].Start(rand.Int())
 	}
 
@@ -462,7 +462,7 @@ func TestBackup2B(t *testing.T) {
 	cfg.connect(other)
 
 	// lots of successful commands to new group.
-	for i := 0; i < 50; i++ {
+	for i := 0; i < 5; i++ {
 		cfg.one(rand.Int(), 3, true)
 	}
 

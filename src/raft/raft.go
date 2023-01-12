@@ -259,9 +259,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Append = true
 		// If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (§5.3)
 		for idx, entry := range args.Entries {
-			currentIdx := args.PrevLogIndex + idx + 1
+			currentIdx := args.PrevLogIndex + 1 + idx
 			if currentIdx < len(rf.log) && rf.log[currentIdx] != entry {
 				rf.log = rf.log[:currentIdx]
+			} else if currentIdx < len(rf.log) && rf.log[currentIdx] == entry {
+				continue
 			}
 			// fmt.Printf("Before: server %d len(rf.log) %d\n", rf.me, len(rf.log))
 			rf.log = append(rf.log, entry)
@@ -320,6 +322,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.votedFor = args.CandidateId
 			reply.VoteGranted = true
 			rf.ResetElectionTimer()
+			rf.currentTerm = args.Term
 		}
 	}
 
@@ -376,15 +379,15 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// fmt.Printf("Entering Start function\n")
-	index := -1
+	index := len(rf.log) - 1
 	term := -1
 	isLeader := false
 
 	// Your code here (2B).
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	isLeader = (rf.role == Leader)
 	term = rf.currentTerm
-	rf.mu.Unlock()
 	if isLeader {
 		rf.log = append(rf.log, LogEntry{command, term})
 		index = len(rf.log) - 1
@@ -430,13 +433,17 @@ func (rf *Raft) BroadcastAppendEntries() {
 				args := AppendEntriesArgs{}
 				args.Term = rf.currentTerm
 				args.LeaderId = rf.me
+				// keep updating this as well
 				args.PrevLogIndex = rf.nextIndex[i] - 1
 				if args.PrevLogIndex <= -1 {
 					args.PrevLogTerm = -1
 				} else {
 					args.PrevLogTerm = rf.log[rf.nextIndex[i]-1].ReceivedTerm
 				}
-				entries := rf.log[rf.nextIndex[i]:]
+				entries := []LogEntry{}
+				if rf.nextIndex[i] < len(rf.log) {
+					entries = rf.log[rf.nextIndex[i]:]
+				}
 				args.Entries = make([]LogEntry, len(entries))
 				copy(args.Entries, entries)
 				args.LeaderCommit = rf.commitIndex
@@ -444,20 +451,22 @@ func (rf *Raft) BroadcastAppendEntries() {
 				// go func(i int) {
 				ok := rf.sendAppendEntries(i, &args, &reply)
 				// If successful: update nextIndex and matchIndex for follower (§5.3)
-				if ok {
-					if reply.Append {
-						if reply.Success == true {
-							rf.nextIndex[i] = lastLogIndex + 1
-							rf.matchIndex[i] = lastLogIndex
-							// fmt.Printf("leader %d appendReceived++ success\n", rf.me)
-							// fmt.Printf("index %d Raft server %d sending out AppendEntries to peer %d succeeds rf.nextIndex[i] %d\n", index, rf.me, i, rf.nextIndex[i])
-						} else { // If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
-							rf.nextIndex[i] = max(1, rf.nextIndex[i]-1)
-							// fmt.Printf("leader %d appendReceived++ fail\n", rf.me)
-							// fmt.Printf("index %d Raft server %d sending out AppendEntries to peer %d fails rf.nextIndex[i] %d\n", index, rf.me, i, rf.nextIndex[i])
-						}
+				if !ok {
+					return
+				}
+				rf.mu.Lock()
+				defer rf.mu.Unlock()
+				if reply.Append {
+					if reply.Success == true {
+						rf.nextIndex[i] = lastLogIndex + 1
+						rf.matchIndex[i] = lastLogIndex
+						// fmt.Printf("leader %d appendReceived++ success\n", rf.me)
+						// fmt.Printf("index %d Raft server %d sending out AppendEntries to peer %d succeeds rf.nextIndex[i] %d\n", index, rf.me, i, rf.nextIndex[i])
+					} else { // If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
+						rf.nextIndex[i] = max(1, rf.nextIndex[i]-1)
+						// fmt.Printf("leader %d appendReceived++ fail\n", rf.me)
+						// fmt.Printf("index %d Raft server %d sending out AppendEntries to peer %d fails rf.nextIndex[i] %d\n", index, rf.me, i, rf.nextIndex[i])
 					}
-
 				}
 			}(i)
 
@@ -475,7 +484,6 @@ func (rf *Raft) BroadcastAppendEntries() {
 						numLogs++
 					}
 				}
-
 			}
 			if numLogs > len(rf.peers)/2 {
 				rf.commitIndex = N
@@ -535,9 +543,9 @@ func (rf *Raft) ticker() {
 			if rf.killed() == false && rf.role == Candidate {
 				for i := 0; i < len(rf.peers); i++ {
 					if i != rf.me {
+						reply := RequestVoteReply{}
+						// fmt.Printf("Raft server %d sending out RequestVote\n", rf.me)
 						go func(i int) {
-							reply := RequestVoteReply{}
-							// fmt.Printf("Raft server %d sending out RequestVote\n", rf.me)
 							ok := rf.sendRequestVote(i, &args, &reply)
 							if ok {
 								voteResultChan <- reply.VoteGranted
@@ -545,6 +553,12 @@ func (rf *Raft) ticker() {
 								voteResultChan <- false
 							}
 						}(i)
+						if reply.Term > rf.currentTerm {
+							rf.role = Follower
+							rf.votedFor = -1
+							rf.currentTerm = reply.Term
+							return
+						}
 					}
 				}
 				for {
@@ -626,6 +640,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastApplied = 0
 	rf.applyCh = applyCh
 	rf.nextIndex = make([]int, len(rf.peers))
+	for i := 0; i < len(rf.peers); i++ {
+		rf.nextIndex[i] = 1
+	}
 	rf.matchIndex = make([]int, len(rf.peers))
 
 	// Your initialization code here (2A, 2B, 2C).
