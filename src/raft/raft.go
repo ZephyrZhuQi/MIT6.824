@@ -22,7 +22,10 @@ import (
 
 	"bytes"
 	"fmt"
+	"log"
 	"math/rand"
+	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,6 +34,61 @@ import (
 	"6.824/labgob"
 	"6.824/labrpc"
 )
+
+// Retrieve the verbosity level from an environment variable
+func getVerbosity() int {
+	v := os.Getenv("VERBOSE")
+	level := 0
+	if v != "" {
+		var err error
+		level, err = strconv.Atoi(v)
+		if err != nil {
+			log.Fatalf("Invalid verbosity %v", v)
+		}
+	}
+	return level
+}
+
+type logTopic string
+
+const (
+	dClient  logTopic = "CLNT"
+	dCommit  logTopic = "CMIT"
+	dDrop    logTopic = "DROP"
+	dError   logTopic = "ERRO"
+	dInfo    logTopic = "INFO"
+	dLeader  logTopic = "LEAD"
+	dLog     logTopic = "LOG1"
+	dLog2    logTopic = "LOG2"
+	dPersist logTopic = "PERS"
+	dSnap    logTopic = "SNAP"
+	dTerm    logTopic = "TERM"
+	dTest    logTopic = "TEST"
+	dTimer   logTopic = "TIMR"
+	dTrace   logTopic = "TRCE"
+	dVote    logTopic = "VOTE"
+	dWarn    logTopic = "WARN"
+)
+
+var debugStart time.Time
+var debugVerbosity int
+
+func init() {
+	debugVerbosity = getVerbosity()
+	debugStart = time.Now()
+
+	log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
+}
+
+func Debug(topic logTopic, format string, a ...interface{}) {
+	if debugVerbosity >= 1 {
+		time := time.Since(debugStart).Microseconds()
+		time /= 1000
+		prefix := fmt.Sprintf("%06d %v ", time, string(topic))
+		format = prefix + format
+		log.Printf(format, a...)
+	}
+}
 
 func max(a int, b int) int {
 	if a >= b {
@@ -263,6 +321,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			// fmt.Printf("server %d is responding to AppendEntries fail here\n", rf.me)
 			return
 		}
+		Debug(dLog, "S%d -> S%d Sending PLI: %d PLT: %d N: %d LC: %d - %v", args.LeaderId, rf.me, args.PrevLogIndex, args.PrevLogTerm, rf.nextIndex[rf.me], args.LeaderCommit, args.Entries)
 		reply.Append = true
 		// If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (§5.3)
 		for idx, entry := range args.Entries {
@@ -323,7 +382,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.currentTerm = args.Term
 		reply.Term = args.Term
 	}
-	// fmt.Printf("Ser %d rf.votedFor %d len(rf.log) %d args.LastLogTerm %d rf.log[len(rf.log)-1].ReceivedTerm %d args.LastLogIndex %d\n", rf.me, rf.votedFor, len(rf.log), args.LastLogTerm, rf.log[len(rf.log)-1].ReceivedTerm, args.LastLogIndex)
+
 	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
 		if args.LastLogTerm > rf.log[len(rf.log)-1].ReceivedTerm ||
 			args.LastLogTerm == rf.log[len(rf.log)-1].ReceivedTerm && args.LastLogIndex >= len(rf.log)-1 {
@@ -331,8 +390,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			reply.VoteGranted = true
 			rf.ResetElectionTimer()
 			rf.currentTerm = args.Term
+			Debug(dVote, "S%d Granting Vote to S%d at T%d", rf.me, args.CandidateId, args.Term)
 		}
 	}
+	Debug(dPersist, "S%d Logs: %v", rf.peers[i].)
 	rf.persist()
 
 	// fmt.Printf("IncomingTerm %d ServerTerm %d Server %d is %v VoteGranted is %v Candidate is %d\n", args.Term, rf.currentTerm, rf.me, rf.role, reply.VoteGranted, args.CandidateId)
@@ -593,12 +654,13 @@ func (rf *Raft) ticker() {
 				// if state changed during election, ignore the couting
 				rf.mu.Lock()
 				if rf.role != Candidate {
-					DPrintf("Server %v is no longer candidate", rf.me)
+					Debug(dTimer, "S%d is no longer candidate", rf.me)
 					rf.mu.Unlock()
 					return
 				}
 				rf.mu.Unlock()
 				if numVotes >= len(rf.peers)/2+1 {
+					Debug(dLeader, "S%d Achieved Majority for T%d (%d), converting to Leader", rf.me, rf.currentTerm, numVotes)
 					rf.mu.Lock()
 					rf.role = Leader
 					rf.ResetElectionTimer()
@@ -613,6 +675,7 @@ func (rf *Raft) ticker() {
 			state := rf.role
 			rf.mu.Unlock()
 			if state == Leader {
+				Debug(dTimer, "S%d Leader broadcast heartbeats", rf.me)
 				rf.BroadcastAppendEntries()
 			}
 		}
