@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync"
 	"time"
+	"errors"
 )
 
 // in todoMapPool and todoReducePool, a task can be any of the three states
@@ -37,43 +38,54 @@ func (c *Coordinator) AllocateTask(args *AllocateTaskArgs, reply *AllocateTaskRe
 	c.mu.RLock()
 	lenM := len(c.todoMap)
 	lenR := len(c.todoReduce)
+	// log.Printf("lenM: %d, lenR: %d, reply.TaskType: %v", lenM, lenR, reply.TaskType)
 	c.mu.RUnlock()
 	// reduces can't start until the last map has finished
 	if lenM > 0 { // allocate map
 		reply.TaskType = MapApplication
 
-		found := false
+		// log.Printf("reply.TaskType: %v", reply.TaskType)
+
+		// found := false
 		for k := 0; k < len(c.files); k++ {
 			c.mu.RLock()
 			status := c.todoMapPool[k]
 			c.mu.RUnlock()
 			if status == Todo {
-				found = true
+				// found = true
 				reply.TaskNo = k
 				reply.Filename = c.files[k]
+				// log.Printf("Allocating Map Task, TaskNo(k): %d, file: %v", k, reply.Filename)
 				c.mu.Lock()
 				c.todoMapPool[k] = Allocated
 				c.mu.Unlock()
-				break
+				reply.NReduce = c.nReduce
+				reply.NumFiles = len(c.files)
+				go func() {
+					time.Sleep(10 * time.Second)
+					c.mu.RLock()
+					status := c.todoMapPool[reply.TaskNo]
+					c.mu.RUnlock()
+					if status != Finished {
+						c.mu.Lock()
+						c.todoMapPool[reply.TaskNo] = Todo
+						c.mu.Unlock()
+					}
+				}()
+				return nil
 			}
+			// } else {
+			// 	log.Printf("The map task is already being processed.")
+			// 	return errors.New("map task already being processed")
+			// }
 		}
+		log.Printf("Map done.")
+		return errors.New("map done.")
+		
+		// if found {
 
-		reply.NReduce = c.nReduce
-		reply.NumFiles = len(c.files)
-		if found {
-			go func() {
-				time.Sleep(10 * time.Second)
-				c.mu.RLock()
-				status := c.todoMapPool[reply.TaskNo]
-				c.mu.RUnlock()
-				if status != Finished {
-					c.mu.Lock()
-					c.todoMapPool[reply.TaskNo] = Todo
-					c.mu.Unlock()
-				}
-			}()
-		}
-		return nil
+		// }
+		
 	} else if lenR > 0 { // allocate reduce
 		reply.TaskType = ReduceApplication
 		found := false
@@ -84,6 +96,7 @@ func (c *Coordinator) AllocateTask(args *AllocateTaskArgs, reply *AllocateTaskRe
 			if status == Todo {
 				found = true
 				reply.TaskNo = k
+				// log.Printf("Allocating Reduce Task, TaskNo(k): %d", k)
 				c.mu.Lock()
 				c.todoReducePool[k] = Allocated
 				c.mu.Unlock()
@@ -107,7 +120,8 @@ func (c *Coordinator) AllocateTask(args *AllocateTaskArgs, reply *AllocateTaskRe
 		}
 		return nil
 	} else {
-		return nil
+		// log.Printf("reply.TaskType: %v", reply.TaskType)
+		return errors.New("Both map and reduce are done.")
 	}
 }
 
@@ -118,6 +132,7 @@ func (c *Coordinator) FinishTask(args *FinishTaskArgs, reply *FinishTaskReply) e
 		c.mu.Lock()
 		c.todoMapPool[finishTaskNo] = Finished
 		delete(c.todoMap, finishTaskNo)
+		// log.Printf("Finished Map TaskNo: %d, len(c.todoMap): %d", finishTaskNo, len(c.todoMap))
 		c.mu.Unlock()
 	} else if finishTaskType == ReduceApplication {
 		c.mu.Lock()

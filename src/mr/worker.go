@@ -47,7 +47,7 @@ func Worker(mapf func(string, string) []KeyValue,
 	for {
 		// Your worker implementation here.
 		ret, TaskType, TaskNo, filename, nReduce, numFiles := CallAllocateTask()
-		if !ret {
+		if ret == false { // there is error
 			return false
 		}
 		// uncomment to send the Example RPC to the coordinator.
@@ -73,7 +73,7 @@ func WorkerMap(mapf func(string, string) []KeyValue, TaskNo int, filename string
 	intermediate := []KeyValue{}
 	file, err := os.Open(filename)
 	if err != nil {
-		log.Fatalf("Mapper: cannot open %v", filename)
+		log.Fatalf("Mapper: cannot open file: %v", filename)
 	}
 	content, err := ioutil.ReadAll(file)
 	if err != nil {
@@ -183,26 +183,33 @@ func WorkerReduce(reducef func(string, []string) string, TaskNo int, numFiles in
 	}
 }
 
+// usually returns true.
+// returns false if something goes wrong.
 func CallAllocateTask() (bool, int, int, string, int, int) {
 	args := AllocateTaskArgs{}
 	reply := AllocateTaskReply{}
 	ret := call("Coordinator.AllocateTask", &args, &reply)
-	if !ret {
+	if ret == false { // there is error
+		log.Fatalf("Coordinator.AllocateTask failed with error: %v", ret)
 		return false, reply.TaskType, reply.TaskNo, reply.Filename, reply.NReduce, reply.NumFiles
+	} else {
+		// fmt.Printf("reply.Filename %v\n", reply.Filename)
+		return true, reply.TaskType, reply.TaskNo, reply.Filename, reply.NReduce, reply.NumFiles
 	}
-	// fmt.Printf("reply.Filename %v\n", reply.Filename)
-	return true, reply.TaskType, reply.TaskNo, reply.Filename, reply.NReduce, reply.NumFiles
 }
 
+// usually returns true.
+// returns false if something goes wrong.
 func CallFinishTask(TaskType int, TaskNo int) bool {
 	args := FinishTaskArgs{}
 	args.TaskType = TaskType
 	args.TaskNo = TaskNo
 	reply := FinishTaskReply{}
 	ret := call("Coordinator.FinishTask", &args, &reply)
-	if !ret {
+	if ret == false { // if there is error
+		log.Fatalf("Coordinator.FinishTask failed with error: %v", ret)
 		return false
-	} else {
+	} else { // if there is no error
 		return true
 	}
 }
