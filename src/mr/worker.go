@@ -45,13 +45,10 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) bool {
 
 	for {
-		// Your worker implementation here.
 		ret, TaskType, TaskNo, filename, nReduce, numFiles := CallAllocateTask()
 		if ret == false { // there is error
 			return false
 		}
-		// uncomment to send the Example RPC to the coordinator.
-		// CallExample()
 
 		if TaskType == MapApplication {
 			ret = WorkerMap(mapf, TaskNo, filename, nReduce)
@@ -83,14 +80,6 @@ func WorkerMap(mapf func(string, string) []KeyValue, TaskNo int, filename string
 	kva := mapf(filename, string(content))
 	intermediate = append(intermediate, kva...)
 
-	// print the intermediate output to file: mr-0-0
-	// oname := "mr-0-0"
-	// for outputId := 0; outputId < nReduce; outputId++ {
-	// 	oname := "mr-" + strconv.Itoa(TaskNo) + "-" + strconv.Itoa(outputId)
-	// 	ofile, _ := os.Create(oname)
-	// 	ofile.Close()
-	// }
-
 	outputs := make([][]KeyValue, nReduce)
 	for i := range outputs {
 		outputs[i] = make([]KeyValue, 0)
@@ -102,9 +91,6 @@ func WorkerMap(mapf func(string, string) []KeyValue, TaskNo int, filename string
 
 	for outputId := 0; outputId < nReduce; outputId++ {
 		oname := "mr-" + strconv.Itoa(TaskNo) + "-" + strconv.Itoa(outputId)
-		// ofile, _ := os.OpenFile(oname, os.O_APPEND|os.O_WRONLY, 0644)
-		// os.O_APPEND leads to error!
-		// ofile, _ := os.OpenFile(oname, os.O_CREATE|os.O_WRONLY, 0644)
 		ofile, _ := os.CreateTemp("", oname+"_tmp")
 		defer os.Remove(ofile.Name()) // clean up
 		enc := json.NewEncoder(ofile)
@@ -150,8 +136,6 @@ func WorkerReduce(reducef func(string, []string) string, TaskNo int, numFiles in
 			intermediate = append(intermediate, kv)
 		}
 		file.Close()
-		// kva := mapf(filename, string(content))
-		// intermediate = append(intermediate, kva...)
 	}
 	sort.Sort(ByKey(intermediate))
 	oname := "mr-out-" + strconv.Itoa(TaskNo)
@@ -190,10 +174,8 @@ func CallAllocateTask() (bool, int, int, string, int, int) {
 	reply := AllocateTaskReply{}
 	ret := call("Coordinator.AllocateTask", &args, &reply)
 	if ret == false { // there is error
-		log.Fatalf("Coordinator.AllocateTask failed with error: %v", ret)
 		return false, reply.TaskType, reply.TaskNo, reply.Filename, reply.NReduce, reply.NumFiles
 	} else {
-		// fmt.Printf("reply.Filename %v\n", reply.Filename)
 		return true, reply.TaskType, reply.TaskNo, reply.Filename, reply.NReduce, reply.NumFiles
 	}
 }
@@ -207,7 +189,6 @@ func CallFinishTask(TaskType int, TaskNo int) bool {
 	reply := FinishTaskReply{}
 	ret := call("Coordinator.FinishTask", &args, &reply)
 	if ret == false { // if there is error
-		log.Fatalf("Coordinator.FinishTask failed with error: %v", ret)
 		return false
 	} else { // if there is no error
 		return true
@@ -256,6 +237,6 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 		return true
 	}
 
-	fmt.Println(err)
+	// fmt.Println(err)
 	return false
 }

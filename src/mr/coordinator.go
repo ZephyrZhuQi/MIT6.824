@@ -21,7 +21,6 @@ const (
 )
 
 type Coordinator struct {
-	// Your definitions here.
 	// todoMapPool and todoReducePool are shared data, should be protected by mu
 	todoMapPool    map[int]int  // the map tasks needed to do
 	todoReducePool map[int]int  // the reduce tasks needed to do
@@ -38,24 +37,17 @@ func (c *Coordinator) AllocateTask(args *AllocateTaskArgs, reply *AllocateTaskRe
 	c.mu.RLock()
 	lenM := len(c.todoMap)
 	lenR := len(c.todoReduce)
-	// log.Printf("lenM: %d, lenR: %d, reply.TaskType: %v", lenM, lenR, reply.TaskType)
 	c.mu.RUnlock()
 	// reduces can't start until the last map has finished
 	if lenM > 0 { // allocate map
 		reply.TaskType = MapApplication
-
-		// log.Printf("reply.TaskType: %v", reply.TaskType)
-
-		// found := false
 		for k := 0; k < len(c.files); k++ {
 			c.mu.RLock()
 			status := c.todoMapPool[k]
 			c.mu.RUnlock()
 			if status == Todo {
-				// found = true
 				reply.TaskNo = k
 				reply.Filename = c.files[k]
-				// log.Printf("Allocating Map Task, TaskNo(k): %d, file: %v", k, reply.Filename)
 				c.mu.Lock()
 				c.todoMapPool[k] = Allocated
 				c.mu.Unlock()
@@ -74,53 +66,37 @@ func (c *Coordinator) AllocateTask(args *AllocateTaskArgs, reply *AllocateTaskRe
 				}()
 				return nil
 			}
-			// } else {
-			// 	log.Printf("The map task is already being processed.")
-			// 	return errors.New("map task already being processed")
-			// }
 		}
-		log.Printf("Map done.")
 		return errors.New("map done.")
-		
-		// if found {
-
-		// }
-		
 	} else if lenR > 0 { // allocate reduce
 		reply.TaskType = ReduceApplication
-		found := false
 		for k := 0; k < c.nReduce; k++ {
 			c.mu.RLock()
 			status := c.todoReducePool[k]
 			c.mu.RUnlock()
 			if status == Todo {
-				found = true
 				reply.TaskNo = k
-				// log.Printf("Allocating Reduce Task, TaskNo(k): %d", k)
 				c.mu.Lock()
 				c.todoReducePool[k] = Allocated
 				c.mu.Unlock()
-				break
+				reply.NReduce = c.nReduce
+				reply.NumFiles = len(c.files)
+				go func() {
+					time.Sleep(10 * time.Second)
+					c.mu.RLock()
+					status := c.todoReducePool[reply.TaskNo]
+					c.mu.RUnlock()
+					if status != Finished {
+						c.mu.Lock()
+						c.todoReducePool[reply.TaskNo] = Todo
+						c.mu.Unlock()
+					}
+				}()
+				return nil
 			}
 		}
-		reply.NReduce = c.nReduce
-		reply.NumFiles = len(c.files)
-		if found {
-			go func() {
-				time.Sleep(10 * time.Second)
-				c.mu.RLock()
-				status := c.todoReducePool[reply.TaskNo]
-				c.mu.RUnlock()
-				if status != Finished {
-					c.mu.Lock()
-					c.todoReducePool[reply.TaskNo] = Todo
-					c.mu.Unlock()
-				}
-			}()
-		}
-		return nil
+		return errors.New("reduce done.")
 	} else {
-		// log.Printf("reply.TaskType: %v", reply.TaskType)
 		return errors.New("Both map and reduce are done.")
 	}
 }
@@ -130,15 +106,14 @@ func (c *Coordinator) FinishTask(args *FinishTaskArgs, reply *FinishTaskReply) e
 	finishTaskType := args.TaskType
 	if finishTaskType == MapApplication {
 		c.mu.Lock()
+		defer c.mu.Unlock()
 		c.todoMapPool[finishTaskNo] = Finished
 		delete(c.todoMap, finishTaskNo)
-		// log.Printf("Finished Map TaskNo: %d, len(c.todoMap): %d", finishTaskNo, len(c.todoMap))
-		c.mu.Unlock()
 	} else if finishTaskType == ReduceApplication {
 		c.mu.Lock()
+		defer c.mu.Unlock()
 		c.todoReducePool[finishTaskNo] = Finished
 		delete(c.todoReduce, finishTaskNo)
-		c.mu.Unlock()
 	}
 	return nil
 }
@@ -157,10 +132,13 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 // start a thread that listens for RPCs from worker.go
 //
 func (c *Coordinator) server() {
+	// The rpc.Register function registers the Coordinator struct c as an RPC service. This allows the RPC server to handle remote procedure calls to the methods defined in the Coordinator struct.
 	rpc.Register(c)
 	rpc.HandleHTTP()
 	//l, e := net.Listen("tcp", ":1234")
+	// The coordinatorSock() function returns the name of the socket file to be used for communication between the coordinator and workers. The socket file is used as the network address for the RPC server.
 	sockname := coordinatorSock()
+	// The os.Remove function is called to remove any existing socket file with the same name. This ensures that the socket file is created freshly for the RPC server.
 	os.Remove(sockname)
 	l, e := net.Listen("unix", sockname)
 	if e != nil {
@@ -174,16 +152,9 @@ func (c *Coordinator) server() {
 // if the entire job has finished.
 //
 func (c *Coordinator) Done() bool {
-	ret := false
-
-	// Your code here.
 	c.mu.RLock()
-	if len(c.todoMap) == 0 && len(c.todoReduce) == 0 {
-		ret = true
-	}
-	c.mu.RUnlock()
-
-	return ret
+	defer c.mu.RUnlock()
+	return len(c.todoMap) == 0 && len(c.todoReduce) == 0 
 }
 
 //
